@@ -23,16 +23,20 @@
 #include "fe_listbox.hpp"
 #include "fe_settings.hpp"
 #include "fe_shader.hpp"
+#include "fe_present.hpp"
+#include "fe_util.hpp"
 #include <iostream>
 
 FeListBox::FeListBox( int x, int y, int w, int h )
-	: FeBasePresentable( false ),
+	: FeBasePresentable(),
 	m_selColour( sf::Color::Yellow ),
 	m_selBg( sf::Color::Blue ),
 	m_selStyle( sf::Text::Regular ),
 	m_rows( 11 ),
 	m_userCharSize( 0 ),
-	m_rotation( 0.0 )
+	m_filter_offset( 0 ),
+	m_rotation( 0.0 ),
+	m_scripted( true )
 {
 	m_base_text.setPosition( sf::Vector2f( x, y ) );
 	m_base_text.setSize( sf::Vector2f( w, h ) );
@@ -48,14 +52,16 @@ FeListBox::FeListBox(
 		const sf::Color &selbgcolour,
 		unsigned int charactersize,
 		int rows )
-	: FeBasePresentable( false ),
+	: FeBasePresentable(),
 	m_base_text( font, colour, bgcolour, charactersize, FeTextPrimative::Centre ),
 	m_selColour( selcolour ),
 	m_selBg( selbgcolour ),
 	m_selStyle( sf::Text::Regular ),
 	m_rows( rows ),
-	m_userCharSize( 0 ),
-	m_rotation( 0.0 )
+	m_userCharSize( charactersize ),
+	m_filter_offset( 0 ),
+	m_rotation( 0.0 ),
+	m_scripted( false )
 {
 }
 
@@ -72,7 +78,9 @@ const sf::Vector2f &FeListBox::getPosition() const
 void FeListBox::setPosition( const sf::Vector2f &p )
 {
 	m_base_text.setPosition( p );
-	script_do_update( this );
+
+	if ( m_scripted )
+		FePresent::script_do_update( this );
 }
 
 const sf::Vector2f &FeListBox::getSize() const
@@ -83,7 +91,9 @@ const sf::Vector2f &FeListBox::getSize() const
 void FeListBox::setSize( const sf::Vector2f &s )
 {
 	m_base_text.setSize( s );
-	script_do_update( this );
+
+	if ( m_scripted )
+		FePresent::script_do_update( this );
 }
 
 float FeListBox::getRotation() const
@@ -98,22 +108,24 @@ const sf::Color &FeListBox::getColor() const
 
 void FeListBox::init( float scale_x, float scale_y )
 {
-	sf::Transform scaler;
-	scaler.scale( scale_x, scale_y );
+	sf::Vector2f size = getSize();
+	sf::Vector2f pos = getPosition();
 
-	sf::Vector2f size = scaler.transformPoint( getSize() );
-	sf::Vector2f pos = scaler.transformPoint( getPosition() );
+	float scale_factor( ( scale_x > scale_y ) ? scale_x : scale_y );
+	if ( scale_factor <= 0.f )
+		scale_factor = 1.f;
 
 	int actual_spacing = (int)size.y / m_rows;
-	int char_size = 10;
+	int char_size = 8 * scale_factor;
 
 	// Set the character size now
 	//
 	if ( m_userCharSize > 0 )
-		char_size = m_userCharSize * scale_y;
-	else if ( actual_spacing > 14 )
-		char_size = actual_spacing - 4;
+		char_size = m_userCharSize * scale_factor;
+	else if ( actual_spacing > 12 )
+		char_size = ( actual_spacing - 4 ) * scale_factor;
 
+	m_base_text.setTextScale( sf::Vector2f( 1.f / scale_factor, 1.f / scale_factor ) );
 	m_base_text.setCharacterSize( char_size );
 
 	m_texts.clear();
@@ -150,7 +162,8 @@ void FeListBox::setColor( const sf::Color &c )
 			m_texts[i].setColor( c );
 	}
 
-	script_flag_redraw();
+	if ( m_scripted )
+		FePresent::script_flag_redraw();
 }
 
 void FeListBox::setSelColor( const sf::Color &c )
@@ -162,7 +175,9 @@ void FeListBox::setSelColor( const sf::Color &c )
 		int sel = m_texts.size() / 2;
 		m_texts[ sel ].setColor( m_selColour );
 	}
-	script_flag_redraw();
+
+	if ( m_scripted )
+		FePresent::script_flag_redraw();
 }
 
 void FeListBox::setSelBgColor( const sf::Color &c )
@@ -173,7 +188,9 @@ void FeListBox::setSelBgColor( const sf::Color &c )
 		int sel = m_texts.size() / 2;
 		m_texts[ sel ].setBgColor( m_selBg );
 	}
-	script_flag_redraw();
+
+	if ( m_scripted )
+		FePresent::script_flag_redraw();
 }
 
 void FeListBox::setSelStyle( int s )
@@ -184,12 +201,22 @@ void FeListBox::setSelStyle( int s )
 		int sel = m_texts.size() / 2;
 		m_texts[ sel ].setStyle( m_selStyle );
 	}
-	script_flag_redraw();
+
+	if ( m_scripted )
+		FePresent::script_flag_redraw();
 }
 
 int FeListBox::getSelStyle()
 {
 	return m_selStyle;
+}
+
+void FeListBox::setTextScale( const sf::Vector2f &scale )
+{
+	m_base_text.setTextScale( scale );
+
+	for ( unsigned int i=0; i < m_texts.size(); i++ )
+		m_texts[i].setTextScale( scale );
 }
 
 FeTextPrimative *FeListBox::setEditMode( bool e, sf::Color c )
@@ -239,20 +266,55 @@ void FeListBox::setRotation( float r )
 	for ( unsigned int i=0; i < m_texts.size(); i++ )
 		m_texts[i].setRotation( m_rotation );
 
-	script_flag_redraw();
+	if ( m_scripted )
+		FePresent::script_flag_redraw();
 }
 
 void FeListBox::on_new_list( FeSettings *s, float scale_x, float scale_y )
 {
 	init( scale_x, scale_y );
 
-	s->get_current_display_list( m_displayList );
-	setText( s->get_rom_index(), m_displayList );
+	int filter_index = s->get_filter_index_from_offset( m_filter_offset );
+	int filter_size = s->get_filter_size( filter_index );
+
+	m_displayList.clear();
+	m_displayList.reserve( filter_size );
+
+	if ( !m_format_string.empty() )
+	{
+		for ( int i=0; i < filter_size; i++ )
+		{
+			m_displayList.push_back( m_format_string );
+			s->do_text_substitutions_absolute( m_displayList.back(), filter_index, i );
+		}
+	}
+	else
+	{
+		if ( s->hide_brackets() )
+		{
+			for ( int i=0; i < filter_size; i++ )
+			{
+				const std::string &temp = s->get_rom_info_absolute( filter_index, i, FeRomInfo::Title );
+				m_displayList.push_back( name_with_brackets_stripped( temp ));
+			}
+		}
+		else
+		{
+			for ( int i=0; i < filter_size; i++ )
+				m_displayList.push_back( s->get_rom_info_absolute( filter_index, i, FeRomInfo::Title ) );
+		}
+	}
+
+	setText(
+			s->get_rom_index( filter_index, 0 ),
+			m_displayList );
 }
 
 void FeListBox::on_new_selection( FeSettings *s )
 {
-	setText( s->get_rom_index(), m_displayList );
+	setText(
+			s->get_rom_index( s->get_filter_index_from_offset( m_filter_offset ), 0 ),
+			m_displayList );
 }
 
 void FeListBox::draw( sf::RenderTarget &target, sf::RenderStates states ) const
@@ -287,6 +349,16 @@ void FeListBox::setIndexOffset( int io )
 int FeListBox::getIndexOffset() const
 {
 	return 0;
+}
+
+void FeListBox::setFilterOffset( int fo )
+{
+	m_filter_offset = fo;
+}
+
+int FeListBox::getFilterOffset() const
+{
+	return m_filter_offset;
 }
 
 int FeListBox::get_bgr()
@@ -337,7 +409,9 @@ void FeListBox::setBgColor( const sf::Color &c )
 		if ( i != ( m_texts.size() / 2 ) )
 			m_texts[i].setBgColor( c );
 	}
-	script_flag_redraw();
+
+	if ( m_scripted )
+		FePresent::script_flag_redraw();
 }
 
 void FeListBox::set_bgr(int r)
@@ -375,7 +449,9 @@ void FeListBox::set_bg_rgb(int r, int g, int b )
 	c.g=g;
 	c.b=b;
 	m_base_text.setBgColor(c);
-	script_flag_redraw();
+
+	if ( m_scripted )
+		FePresent::script_flag_redraw();
 }
 
 void FeListBox::set_charsize(int s)
@@ -385,7 +461,8 @@ void FeListBox::set_charsize(int s)
 	// We call script_do_update to trigger a call to our init() function
 	// with the appropriate parameters
 	//
-	script_do_update( this );
+	if ( m_scripted )
+		FePresent::script_do_update( this );
 }
 
 void FeListBox::set_rows(int r)
@@ -396,7 +473,9 @@ void FeListBox::set_rows(int r)
 	if ( m_rows > 0 )
 	{
 		m_rows = r;
-		script_flag_redraw();
+
+		if ( m_scripted )
+			FePresent::script_flag_redraw();
 	}
 }
 
@@ -408,7 +487,9 @@ void FeListBox::set_style(int s)
 		if ( i != ( m_texts.size() / 2 ) )
 			m_texts[i].setStyle( s );
 	}
-	script_flag_redraw();
+
+	if ( m_scripted )
+		FePresent::script_flag_redraw();
 }
 
 void FeListBox::set_align(int a)
@@ -418,7 +499,8 @@ void FeListBox::set_align(int a)
 	for ( unsigned int i=0; i < m_texts.size(); i++ )
 		m_texts[i].setAlignment( (FeTextPrimative::Alignment)a );
 
-	script_flag_redraw();
+	if ( m_scripted )
+		FePresent::script_flag_redraw();
 }
 
 int FeListBox::get_selr()
@@ -532,13 +614,35 @@ void FeListBox::set_selbg_rgb(int r, int g, int b )
 
 void FeListBox::set_font( const char *f )
 {
-	const sf::Font *font = script_get_font( f );
+	FePresent *fep = FePresent::script_get_fep();
+	if ( !fep )
+		return;
+
+	const FeFontContainer *fc = fep->get_pooled_font( f );
+
+	if ( !fc )
+		return;
+
+	const sf::Font *font=&(fc->get_font());
 
 	if ( font )
 	{
 		setFont( *font );
 		m_font_name = f;
 
-		script_flag_redraw();
+		FePresent::script_flag_redraw();
 	}
+}
+
+const char *FeListBox::get_format_string()
+{
+	return m_format_string.c_str();
+}
+
+void FeListBox::set_format_string( const char *s )
+{
+	m_format_string = s;
+
+	if ( m_scripted )
+		FePresent::script_do_update( this );
 }

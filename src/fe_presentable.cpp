@@ -21,10 +21,10 @@
  */
 
 #include "fe_presentable.hpp"
+#include "fe_present.hpp"
 
-FeBasePresentable::FeBasePresentable( const bool draw_apply_scale )
+FeBasePresentable::FeBasePresentable()
 	: m_shader( NULL ),
-	m_draw_apply_scale( draw_apply_scale ),
 	m_visible( true )
 {
 }
@@ -78,7 +78,18 @@ void FeBasePresentable::set_width( float w )
 
 void FeBasePresentable::set_height( float h )
 {
-	setSize( sf::Vector2f( get_width(), h ));
+	setSize( sf::Vector2f( get_width(), h ) );
+}
+
+void FeBasePresentable::set_pos(float x, float y)
+{
+	setPosition( sf::Vector2f( x, y ) );
+}
+
+void FeBasePresentable::set_pos(float x, float y, float w, float h)
+{
+	setPosition( sf::Vector2f( x, y ) );
+	setSize( sf::Vector2f( w, h ) );
 }
 
 int FeBasePresentable::get_r() const
@@ -146,7 +157,7 @@ bool FeBasePresentable::get_visible() const
 void FeBasePresentable::set_visible( bool v )
 {
 	m_visible = v;
-	script_flag_redraw();
+	FePresent::script_flag_redraw();
 }
 
 FeShader *FeBasePresentable::get_shader() const
@@ -159,9 +170,11 @@ FeShader *FeBasePresentable::script_get_shader() const
 	if ( m_shader )
 		return m_shader;
 	else
-		return script_get_empty_shader();
+	{
+		FePresent *fep = FePresent::script_get_fep();
+		return fep->get_empty_shader();
+	}
 }
-
 
 void FeBasePresentable::script_set_shader( FeShader *sh )
 {

@@ -35,8 +35,11 @@ class FeSettings;
 class FeListBox : public FeBasePresentable, public sf::Drawable
 {
 public:
+
+	// Constructor for use in scripts.  sets m_scripted to true
 	FeListBox( int x, int y, int w, int h );
 
+	// Constructor for use in overlay.  sets m_scripted to false
 	FeListBox( const sf::Font *font,
 			const sf::Color &colour,
 			const sf::Color &bgcolour,
@@ -57,6 +60,8 @@ public:
 
 	int getIndexOffset() const;
 	void setIndexOffset( int );
+	int getFilterOffset() const;
+	void setFilterOffset( int );
 
 	void setColor( const sf::Color & );
 	void setBgColor( const sf::Color & );
@@ -64,6 +69,7 @@ public:
 	void setSelBgColor( const sf::Color & );
 	void setSelStyle( int );
 	int getSelStyle();
+	void setTextScale( const sf::Vector2f & );
 
 	FeTextPrimative *setEditMode( bool, sf::Color );
 
@@ -79,7 +85,7 @@ public:
 	void on_new_list( FeSettings *, float, float );
 	void on_new_selection( FeSettings * );
 
-	const sf::Drawable &drawable() { return (const sf::Drawable &)*this; };
+	const sf::Drawable &drawable() const { return (const sf::Drawable &)*this; };
 
 	int get_bgr();
 	int get_bgg();
@@ -112,12 +118,15 @@ public:
 	int get_selbgb();
 	int get_selbga();
 	const char *get_font();
+	const char *get_format_string();
+
 	void set_selbgr(int r);
 	void set_selbgg(int g);
 	void set_selbgb(int b);
 	void set_selbga(int a);
 	void set_selbg_rgb( int, int, int );
 	void set_font( const char *f );
+	void set_format_string( const char *s );
 
 private:
 	FeListBox( const FeListBox & );
@@ -127,12 +136,15 @@ private:
 	std::vector<std::string> m_displayList;
 	std::vector<FeTextPrimative> m_texts;
 	std::string m_font_name;
+	std::string m_format_string;
 	sf::Color m_selColour;
 	sf::Color m_selBg;
 	int m_selStyle;
 	int m_rows;
 	int m_userCharSize;
+	int m_filter_offset;
 	float m_rotation;
+	bool m_scripted;
 
 	void draw( sf::RenderTarget &target, sf::RenderStates states ) const;
 };

@@ -1,7 +1,7 @@
 /*
  *
  *  Attract-Mode frontend
- *  Copyright (C) 2013 Andrew Mickelson
+ *  Copyright (C) 2013-15 Andrew Mickelson
  *
  *  This file is part of Attract-Mode.
  *
@@ -30,15 +30,11 @@
 #include "fe_shader.hpp"
 
 class FeImage;
-class FeTextureContainer;
+class FeBaseTextureContainer;
 class FeText;
 class FeListBox;
 class FeFontContainer;
-
-namespace Sqrat
-{
-	class Table;
-};
+class FeSurfaceTextureContainer;
 
 enum FeTransitionType
 {
@@ -48,7 +44,8 @@ enum FeTransitionType
 	FromOldSelection,	// var == index_offset of old selection
 	ToGame,				// var = 0
 	FromGame,			// var = 0
-	ToNewList			// var = 0
+	ToNewList,			// var = filter offset of new filter (if available), otherwise 0
+	EndNavigation		// var = 0
 };
 
 //
@@ -70,12 +67,10 @@ private:
 class FePresent
 	: public sf::Drawable
 {
-	friend void script_do_update( FeBasePresentable * );
-	friend FeShader *script_get_empty_shader();
+	friend class FeSurfaceTextureContainer;
+	friend class FeVM;
 
-private:
-	static const char *transitionTypeStrings[];
-
+protected:
 	enum FromToType
 	{
 		FromToNoValue=0,
@@ -84,38 +79,26 @@ private:
 	};
 
 	FeSettings *m_feSettings;
-	const FeScriptConfigurable *m_currentScriptConfig;
 
 	const FeFontContainer *m_currentFont;
 	FeFontContainer &m_defaultFont;
 	std::string m_layoutFontName;
 
-	enum MoveState { MoveNone, MoveUp, MoveDown, MovePageUp, MovePageDown };
-	MoveState m_moveState;
-	sf::Event m_moveEvent;
-	sf::Clock m_moveTimer;
-	sf::Clock m_movieStartTimer;
 	sf::Clock m_layoutTimer;
 	sf::Time m_lastInput;
 
 	FeSettings::RotationState m_baseRotation;
 	FeSettings::RotationState m_toggleRotation;
-	sf::Transform m_rotationTransform;
-	sf::Transform m_scaledTransform;
+	sf::Transform m_transform;
 
 	std::vector<FeBasePresentable *> m_elements;
-	std::vector<FeTextureContainer *> m_texturePool;
-	std::vector<FeScriptSound *> m_scriptSounds;
+	std::vector<FeBaseTextureContainer *> m_texturePool;
+	std::vector<FeSound *> m_sounds;
 	std::vector<FeShader *> m_scriptShaders;
 	std::vector<FeFontContainer *> m_fontPool;
-	std::vector<std::string> m_ticksList;
-	std::vector<std::string> m_transitionList;
 	bool m_playMovies;
 	bool m_screenSaverActive;
-
-	// flag if a redraw has been triggered during script callback execution
-	//
-	bool m_redrawTriggered;
+	int m_user_page_size;
 
 	FeListBox *m_listBox; // we only keep this ptr so we can get page sizes
 	sf::Vector2i m_layoutSize;
@@ -127,112 +110,104 @@ private:
 	FePresent( const FePresent & );
 	FePresent &operator=( const FePresent & );
 
-	int get_no_wrap_step( int step );
-	void clear();
+	virtual void clear();
 	void toggle_movie();
 
 	void toggle_rotate( FeSettings::RotationState ); // toggle between none and provided state
 	void set_transforms();
+	int update( bool reload_list=false, bool new_layout=false );
 
 	// Overrides from base classes:
 	//
 	void draw(sf::RenderTarget& target, sf::RenderStates states) const;
 
-	float get_layout_scale_x() const;
-	float get_layout_scale_y() const;
-
-	// Scripting functionality
-	//
-	void vm_close();
-	void vm_init();
-	void vm_on_new_layout( const std::string &filename, const FeLayoutInfo &layout_params );
-	bool vm_on_tick();
-	bool vm_on_transition( FeTransitionType, int var, sf::RenderWindow *wnd );
-
-	FeImage *add_image(bool a, const std::string &n, int x, int y, int w, int h);
-	FeImage *add_clone(FeImage *);
-	FeText *add_text(const std::string &n, int x, int y, int w, int h);
-	FeListBox *add_listbox(int x, int y, int w, int h);
-	FeScriptSound *add_sound(const std::string &n);
+	FeImage *add_image(bool a, const std::string &n, int x, int y, int w, int h, std::vector<FeBasePresentable *> &l);
+	FeImage *add_clone(FeImage *, std::vector<FeBasePresentable *> &l);
+	FeText *add_text(const std::string &n, int x, int y, int w, int h, std::vector<FeBasePresentable *> &l);
+	FeListBox *add_listbox(int x, int y, int w, int h, std::vector<FeBasePresentable *> &l);
+	FeImage *add_surface(int w, int h, std::vector<FeBasePresentable *> &l);
+	FeSound *add_sound(const char *n);
 	FeShader *add_shader(FeShader::Type type, const char *shader1, const char *shader2);
-	void add_ticks_callback(const std::string &);
-	void add_transition_callback(const std::string &);
 	int get_layout_width() const;
 	int get_layout_height() const;
-	int get_layout_orient() const;
-	const char *get_list_name() const;
+	int get_base_rotation() const;
+	int get_toggle_rotation() const;
+	const char *get_display_name() const;
 	const char *get_filter_name() const;
+	int get_filter_index() const;
+	void set_filter_index( int );
 	int get_list_size() const;
-	int get_list_index() const;
-	void set_list_index( int );
+	int get_selection_index() const;
+	int get_sort_by() const;
+	bool get_reverse_order() const;
+	int get_list_limit() const;
+
+	void set_selection_index( int );
 	const char *get_layout_font() const;
 	void set_layout_width( int );
 	void set_layout_height( int );
-	void set_layout_orient( int );
+	void set_base_rotation( int );
+	void set_toggle_rotation( int );
 	void set_layout_font( const char * );
-	FeShader *get_empty_shader();
+	void set_video_play_state( bool state );
 
 public:
 	FePresent( FeSettings *fesettings, FeFontContainer &defaultfont );
-	~FePresent( void );
+	virtual ~FePresent( void );
 
-	void load_screensaver( sf::RenderWindow *wnd );
-	void load_layout( sf::RenderWindow *wnd, bool initial_load=false );
+	void load_screensaver();
+	void load_layout( bool initial_load=false );
 
-	int update( bool reload_list=false );
-	void update_to_new_list( sf::RenderWindow *wnd );
+	void update_to_new_list( int var=0, bool new_layout=false );
+	void on_end_navigation();
 
-	bool tick( sf::RenderWindow *w ); // return true if display refresh required
-	void on_stop_frontend( sf::RenderWindow *w );
-	void pre_run( sf::RenderWindow *w );
-	void post_run( sf::RenderWindow *w );
+	bool tick(); // run vm on_tick and update videos.  return true if redraw required
+	bool video_tick(); // update videos only. return true if redraw required
+
+	bool saver_activation_check();
+	void on_stop_frontend();
+	void pre_run();
+	void post_run();
 	void toggle_mute();
 
-	bool reset_screen_saver( sf::RenderWindow *w );
-	bool handle_event( FeInputMap::Command, const sf::Event &ev, sf::RenderWindow *w );
+	bool reset_screen_saver();
+	bool handle_event( FeInputMap::Command );
+
+	void change_selection( int step, bool end_navigation=true );
 
 	FeSettings *get_fes() const { return m_feSettings; };
+
 	int get_page_size() const;
-	const sf::Transform &get_rotation_transform() const;
+	void set_page_size( int );
+
+	const sf::Transform &get_transform() const;
 	const sf::Font *get_font() const; // get the current font (used by overlay)
+
+	float get_layout_scale_x() const;
+	float get_layout_scale_y() const;
 
 	// Get a font from the font pool, loading it if necessary
 	const FeFontContainer *get_pooled_font( const std::string &n );
 
-	sf::Vector2i get_output_size() const { return m_outputSize; }
+	const sf::Vector2i &get_layout_size() const { return m_layoutSize; }
+	FeShader *get_empty_shader();
 
-	void perform_autorotate();
+	//
+	// Script static functions
+	//
+	static FePresent *script_get_fep();
+	static void script_do_update( FeBaseTextureContainer * );
+	static void script_do_update( FeBasePresentable * );
+	static void script_flag_redraw();
 
-	void flag_redraw();
-
-	static FeImage *cb_add_image(const char *,int, int, int, int);
-	static FeImage *cb_add_image(const char *, int, int);
-	static FeImage *cb_add_image(const char *);
-	static FeImage *cb_add_artwork(const char *,int, int, int, int);
-	static FeImage *cb_add_artwork(const char *, int, int);
-	static FeImage *cb_add_artwork(const char *);
-	static FeImage *cb_add_clone(FeImage *);
-	static FeText *cb_add_text(const char *,int, int, int, int);
-	static FeListBox *cb_add_listbox(int, int, int, int);
-	static FeScriptSound *cb_add_sound(const char *);
-	static FeShader *cb_add_shader(int, const char *, const char *);
-	static FeShader *cb_add_shader(int, const char *);
-	static FeShader *cb_add_shader(int);
-	static void cb_add_ticks_callback(const char *);
-	static void cb_add_transition_callback(const char *);
-	static bool cb_is_keypressed(int);	// deprecated as of 1.2
-	static bool cb_is_joybuttonpressed(int,int);	// deprecated as of 1.2
-	static float cb_get_joyaxispos(int,int);	// deprecated as of 1.2
-	static bool cb_get_input_state( const char *input );
-	static int cb_get_input_pos( const char *input );
-	static void do_nut(const char *);
-	static bool cb_plugin_command(const char *, const char *, const char *);
-	static bool cb_plugin_command(const char *, const char *);
-	static bool cb_plugin_command_bg(const char *, const char *);
-	static const char *cb_path_expand( const char *path );
-	static const char *cb_game_info(int,int);
-	static const char *cb_game_info(int);
-	static Sqrat::Table cb_get_config();
+	//
+	//
+	virtual void on_new_layout( const std::string &path, const std::string &filename, const FeLayoutInfo &layout_params )=0;
+	virtual bool on_tick()=0;
+	virtual bool on_transition( FeTransitionType, int var )=0;
+	virtual void flag_redraw()=0;
+	virtual void init_with_default_layout()=0;
 };
+
 
 #endif

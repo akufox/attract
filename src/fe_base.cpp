@@ -26,15 +26,22 @@
 #include <fstream>
 
 #define FE_NAME_D			"Attract-Mode"
-#define FE_VERSION_D 			"1.2.0"
-const int FE_VERSION_NUM		= 120;
+#define FE_VERSION_D 			"1.5.1"
+const int FE_VERSION_NUM		= 151;
 
 const char *FE_NAME			= FE_NAME_D;
 const char *FE_COPYRIGHT		= FE_NAME_D " " FE_VERSION_D \
-	" Copyright (c) 2013 Andrew Mickelson";
+	" Copyright (c) 2013-2015 Andrew Mickelson";
 const char *FE_VERSION 			= FE_VERSION_D;
 
 const char *FE_WHITESPACE=" \t\r";
+const char *FE_DIR_TOKEN				= "<DIR>";
+
+const char *FE_DEFAULT_ARTWORK		= "snap";
+
+const char *FE_EMULATOR_SUBDIR		= "emulators/";
+const char *FE_EMULATOR_FILE_EXTENSION	= ".cfg";
+const char *FE_EMULATOR_DEFAULT		= "default-emulator.cfg";
 
 void FeBaseConfigurable::invalid_setting(
 					const std::string & fn,
@@ -44,23 +51,29 @@ void FeBaseConfigurable::invalid_setting(
 					const char **valid2,
 					const char *label )
 {
-	std::cout << "Unrecognized \"" << base << "\" " << label
-					<< " of \"" << setting << "\" in file: " << fn << ".";
+	std::cerr << "Unrecognized \"" << base << "\" " << label
+					<< " of \"" << setting << "\"";
+
+	if ( !fn.empty() )
+		std::cerr << " in file: " << fn;
+
+	std::cerr << ".";
+
 	int i=0;
 	if (valid1[i])
-		std::cout << "  Valid " << label <<"s are: " << valid1[i++];
+		std::cerr << "  Valid " << label <<"s are: " << valid1[i++];
 
 	while (valid1[i])
-		std::cout << ", " << valid1[i++];
+		std::cerr << ", " << valid1[i++];
 
 	if ( valid2 != NULL )
 	{
 		i=0;
 		while (valid2[i])
-			std::cout << ", " << valid2[i++];
+			std::cerr << ", " << valid2[i++];
 	}
 
-	std::cout << std::endl;
+	std::cerr << std::endl;
 }
 
 bool FeBaseConfigurable::load_from_file( const std::string &filename,

@@ -37,7 +37,7 @@ class FeMedia : private sf::SoundStream
 friend class FeVideoImp;
 
 public:
-	enum Type 
+	enum Type
 	{
 		Audio=0x01,
 		Video=0x02,
@@ -50,7 +50,6 @@ public:
 	bool openFromFile( const std::string &name );
 	sf::Texture *get_texture();
 
-	using sf::SoundStream::setVolume;
 	using sf::SoundStream::setPosition;
 	using sf::SoundStream::getPosition;
 	using sf::SoundStream::setPitch;
@@ -61,15 +60,23 @@ public:
 	void stop();
 	void close();
 
-	// tick() needs to be called regularly on video media to update the display 
+	// tick() needs to be called regularly on video media to update the display
 	// texture. Returns true if display refresh required.  false if no update
 	//
 	bool tick();
 
 	void setLoop( bool );
+	bool getLoop() const;
+
+	void setVolume(float volume);
 
 	bool is_playing();
-	bool get_display_ready() const; // true if a video image is available for display
+	int number_of_frames() const;
+
+	sf::Time get_video_time();
+	sf::Time get_duration() const;
+
+	const char *get_metadata( const char *tag );
 
 	//
 	// return true if the given filename is a media file that can be opened
@@ -85,7 +92,6 @@ protected:
 
 	bool read_packet();
 	bool end_of_file();
-	sf::Time get_video_time();
 
 private:
 	Type m_type;

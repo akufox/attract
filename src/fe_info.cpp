@@ -1,7 +1,7 @@
 /*
  *
  *  Attract-Mode frontend
- *  Copyright (C) 2013 Andrew Mickelson
+ *  Copyright (C) 2013-15 Andrew Mickelson
  *
  *  This file is part of Attract-Mode.
  *
@@ -21,7 +21,6 @@
  */
 
 #include "fe_info.hpp"
-#include "fe_input.hpp"
 #include "fe_util.hpp"
 #include <iostream>
 #include <sstream>
@@ -31,7 +30,9 @@
 #include <squirrel.h>
 #include <sqstdstring.h>
 
-const FeRomInfo::Index FeRomInfo::BuildAltName = FeRomInfo::Favourite;
+const char *FE_STAT_FILE_EXTENSION = ".stat";
+const char FE_TAGS_SEP = ';';
+
 const FeRomInfo::Index FeRomInfo::BuildScratchPad = FeRomInfo::Category;
 
 const char *FeRomInfo::indexStrings[] =
@@ -49,7 +50,14 @@ const char *FeRomInfo::indexStrings[] =
 	"Status",
 	"DisplayCount",
 	"DisplayType",
+	"AltRomname",
+	"AltTitle",
+	"Extra",
 	"Favourite",
+	"Tags",
+	"PlayedCount",
+	"PlayedTime",
+	"FileIsAvailable",
 	NULL
 };
 
@@ -84,6 +92,71 @@ void FeRomInfo::set_info( Index i, const std::string &v )
 	m_info[i] = v;
 }
 
+void FeRomInfo::append_tag( const std::string &tag )
+{
+	//
+	// The tags logic requires a FE_TAGS_SEP character on each side of
+	// a tag.
+	//
+	if ( m_info[Tags].empty() )
+		m_info[Tags] = FE_TAGS_SEP;
+
+	m_info[Tags] += tag;
+	m_info[Tags] += FE_TAGS_SEP;
+}
+
+void FeRomInfo::load_stats( const std::string &path )
+{
+	// Check if stats already loaded for this one
+	if ( !m_info[PlayedCount].empty() )
+		return;
+
+	m_info[PlayedCount] = "0";
+	m_info[PlayedTime] = "0";
+
+	std::string filename = path + m_info[Romname] + FE_STAT_FILE_EXTENSION;
+	std::ifstream myfile( filename.c_str() );
+
+	if ( !myfile.is_open() )
+		return;
+
+	std::string line;
+	if ( myfile.good() )
+	{
+		getline( myfile, line );
+		m_info[PlayedCount] = line;
+	}
+
+	if ( myfile.good() )
+	{
+		getline( myfile, line );
+		m_info[PlayedTime] = line;
+	}
+
+	myfile.close();
+}
+
+void FeRomInfo::update_stats( const std::string &path, int count_incr, int played_incr )
+{
+	int new_count = as_int( m_info[PlayedCount] ) + count_incr;
+	int new_time = as_int( m_info[PlayedTime] ) + played_incr;
+
+	m_info[PlayedCount] = as_str( new_count );
+	m_info[PlayedTime] = as_str( new_time );
+
+	std::string filename = path + m_info[Romname] + FE_STAT_FILE_EXTENSION;
+	std::ofstream myfile( filename.c_str() );
+
+	if ( !myfile.is_open() )
+	{
+		std::cerr << "Error writing stat file: " << filename << std::endl;
+		return;
+	}
+
+	myfile << m_info[PlayedCount] << std::endl << m_info[PlayedTime] << std::endl;
+	myfile.close();
+}
+
 int FeRomInfo::process_setting( const std::string &,
          const std::string &value, const std::string &fn )
 {
@@ -111,85 +184,17 @@ std::string FeRomInfo::as_output( void ) const
 	return s;
 }
 
-void FeRomInfo::dump( void ) const
-{
-	std::cout << '\t';
-	for ( int i=0; i < LAST_INDEX; i++ )
-		std::cout << " " << i << "=["
-			<< get_info((Index)i) << "]";
-	std::cout << std::endl;
-}
-
 void FeRomInfo::clear()
 {
 	for ( int i=0; i < LAST_INDEX; i++ )
 		m_info[i].clear();
 }
 
-SQRex *FeRomListCompare::m_rex = NULL;
-
-void FeRomListCompare::init_rex( const std::string &re_mask )
+bool FeRomInfo::operator==( const FeRomInfo &o ) const
 {
-	ASSERT( m_rex == NULL );
-
-	if ( re_mask.empty() )
-		return;
-
-	const SQChar *err( NULL );
-	m_rex = sqstd_rex_compile(
-		(const SQChar *)re_mask.c_str(), &err );
-
-	if ( !m_rex )
-		std::cout << "Error compiling regular expression \""
-			<< re_mask << "\": " << err << std::endl;
+	return (( m_info[Romname].compare( o.m_info[Romname] ) == 0 )
+				&& ( m_info[Emulator].compare( o.m_info[Emulator] ) == 0 ));
 }
-
-void FeRomListCompare::close_rex()
-{
-	if ( m_rex )
-		sqstd_rex_free( m_rex );
-
-	m_rex = NULL;
-}
-
-bool FeRomListCompare::cmp( const FeRomInfo &one_info, const FeRomInfo &two_info )
-{
-	const std::string &one = one_info.get_info( FeRomInfo::Title );
-	const std::string &two = two_info.get_info( FeRomInfo::Title );
-
-	size_t one_begin( 0 ), one_len( one.size() ), two_begin( 0 ), two_len( two.size() );
-
-	if ( m_rex )
-	{
-		const SQChar *one_begin_ptr;
-		const SQChar *one_end_ptr;
-		const SQChar *two_begin_ptr;
-		const SQChar *two_end_ptr;
-
-		//
-		// I couldn't get Squirrel's no capture regexp (?:) working the way I would expect it to.
-		// I'm probably doing something dumb but I can't figure it out and docs seem nonexistent
-		//
-		// So we do this kind of backwards, instead of defining what we want to compare based on,
-		// the regexp instead defines the part of the string we want to strip out up front
-		//
-		if ( sqstd_rex_search( m_rex, one.c_str(), &one_begin_ptr, &one_end_ptr ) == SQTrue )
-		{
-			one_begin = one_end_ptr - one.c_str();
-			one_len -= one_begin;
-		}
-
-		if ( sqstd_rex_search( m_rex, two.c_str(), &two_begin_ptr, &two_end_ptr ) == SQTrue )
-		{
-			two_begin = two_end_ptr - two.c_str();
-			two_len -= two_begin;
-		}
-	}
-
-	return ( one.compare( one_begin, one_len, two, two_begin, two_len ) < 0 );
-}
-
-const char *FeRule::indexString = "rule";
 
 const char *FeRule::filterCompStrings[] =
 {
@@ -276,51 +281,39 @@ bool FeRule::apply_rule( const FeRomInfo &rom ) const
 	{
 	case FilterEquals:
 		if ( target.empty() )
-		{
-			if ( m_filter_what.empty() )
-				return true;
-			else
-				return false;
-		}
-		return (( sqstd_rex_match(
+			return ( m_filter_what.empty() );
+
+		return ( sqstd_rex_match(
 					m_rex,
-					(const SQChar *)target.c_str()
-					) == SQTrue ) ? true : false );
+					(const SQChar *)target.c_str() ) == SQTrue );
 
 	case FilterNotEquals:
 		if ( target.empty() )
-		{
-			if ( m_filter_what.empty() )
-				return false;
-			else
-				return true;
-		}
-		return (( sqstd_rex_match(
+			return ( !m_filter_what.empty() );
+
+		return ( sqstd_rex_match(
 					m_rex,
-					(const SQChar *)target.c_str()
-					) == SQTrue ) ? false : true );
+					(const SQChar *)target.c_str() ) != SQTrue );
 
 	case FilterContains:
 		if ( target.empty() )
 			return false;
 
-		return (( sqstd_rex_search(
+		return ( sqstd_rex_search(
 					m_rex,
 					(const SQChar *)target.c_str(),
 					&begin,
-					&end
-					) == SQTrue ) ? true : false );
+					&end ) == SQTrue );
 
 	case FilterNotContains:
 		if ( target.empty() )
 			return true;
 
-		return (( sqstd_rex_search(
+		return ( sqstd_rex_search(
 					m_rex,
 					(const SQChar *)target.c_str(),
 					&begin,
-					&end
-					) == SQTrue ) ? false : true );
+					&end ) != SQTrue );
 
 	default:
 		return true;
@@ -332,7 +325,7 @@ void FeRule::save( std::ofstream &f ) const
 	if (( m_filter_target != FeRomInfo::LAST_INDEX )
 		&& ( m_filter_comp != LAST_COMPARISON ))
 	{
-		f << "\t\t" << std::setw(20) << std::left << indexString << ' '
+		f << "\t\t" << std::setw(20) << std::left << FeFilter::indexStrings[0] << ' '
 			<< FeRomInfo::indexStrings[ m_filter_target ] << ' '
 			<< filterCompStrings[ m_filter_comp ] << ' '
 			<< m_filter_what << std::endl;
@@ -354,11 +347,74 @@ void FeRule::set_values(
 	m_filter_what = w;
 }
 
-const char *FeFilter::indexString = "filter";
+int FeRule::process_setting( const std::string &,
+         const std::string &value, const std::string &fn )
+{
+	std::string token;
+	size_t pos=0;
+
+	token_helper( value, pos, token, FE_WHITESPACE );
+
+	int i=0;
+	while( FeRomInfo::indexStrings[i] != NULL )
+	{
+		if ( token.compare( FeRomInfo::indexStrings[i] ) == 0 )
+			break;
+		i++;
+	}
+
+	if ( i >= FeRomInfo::LAST_INDEX )
+	{
+		invalid_setting( fn, "rule", token,
+				FeRomInfo::indexStrings, NULL, "target" );
+		return 1;
+	}
+
+	m_filter_target = (FeRomInfo::Index)i;
+	token_helper( value, pos, token, FE_WHITESPACE );
+
+	i=0;
+	while( filterCompStrings[i] != NULL )
+	{
+		if ( token.compare( filterCompStrings[i] ) == 0 )
+			break;
+		i++;
+	}
+
+	if ( i >= LAST_COMPARISON )
+	{
+		invalid_setting( fn, "rule", token, filterCompStrings,
+				NULL, "comparison" );
+		return 1;
+	}
+
+	m_filter_comp = (FilterComp)i;
+
+	// Remainder of the line is filter regular expression (which may contain
+	// spaces...)
+	//
+	if ( pos < value.size() )
+		m_filter_what = value.substr( pos );
+
+	return 0;
+}
+
+const char *FeFilter::indexStrings[] =
+{
+	"rule",
+	"sort_by",
+	"reverse_order",
+	"list_limit",
+	NULL
+};
 
 FeFilter::FeFilter( const std::string &name )
 	: m_name( name ),
-	m_rom_index( 0 )
+	m_rom_index( 0 ),
+	m_list_limit( 0 ),
+	m_size( 0 ),
+	m_sort_by( FeRomInfo::LAST_INDEX ),
+	m_reverse_order( false )
 {
 }
 
@@ -384,69 +440,44 @@ bool FeFilter::apply_filter( const FeRomInfo &rom ) const
 int FeFilter::process_setting( const std::string &setting,
          const std::string &value, const std::string &fn )
 {
-	if ( value.empty() )
+	if ( setting.compare( indexStrings[0] ) == 0 ) // rule
 	{
-		m_rules.push_back(
-			FeRule( FeRomInfo::LAST_INDEX, FeRule::LAST_COMPARISON, "" )
-			);
-		return 0;
+		FeRule new_rule;
+
+		if ( !value.empty() )
+			new_rule.process_setting( setting, value, fn );
+
+		m_rules.push_back( new_rule );
 	}
-
-	FeRomInfo::Index target;
-	FeRule::FilterComp comp;
-	std::string what;
-
-	std::string token;
-	size_t pos=0;
-
-	token_helper( value, pos, token, FE_WHITESPACE );
-
-	int i=0;
-	while( FeRomInfo::indexStrings[i] != NULL )
+	else if ( setting.compare( indexStrings[1] ) == 0 ) // sort_by
 	{
-		if ( token.compare( FeRomInfo::indexStrings[i] ) == 0 )
-			break;
-		i++;
+		for ( int i=0; i < FeRomInfo::LAST_INDEX; i++ )
+		{
+			if ( value.compare( FeRomInfo::indexStrings[i] ) == 0 )
+			{
+				set_sort_by( (FeRomInfo::Index)i );
+				break;
+			}
+		}
 	}
-
-	if ( i >= FeRomInfo::LAST_INDEX )
+	else if ( setting.compare( indexStrings[2] ) == 0 ) // reverse_order
 	{
-		invalid_setting( fn, "filter", token,
-				FeRomInfo::indexStrings, NULL, "target" );
+		set_reverse_order( true );
+	}
+	else if ( setting.compare( indexStrings[3] ) == 0 ) // list_limit
+	{
+		set_list_limit( as_int( value ) );
+	}
+	else
+	{
+		invalid_setting( fn, "filter", setting, indexStrings );
 		return 1;
 	}
 
-	target = (FeRomInfo::Index)i;
-	token_helper( value, pos, token, FE_WHITESPACE );
-
-	i=0;
-	while( FeRule::filterCompStrings[i] != NULL )
-	{
-		if ( token.compare( FeRule::filterCompStrings[i] ) == 0 )
-			break;
-		i++;
-	}
-
-	if ( i >= FeRule::LAST_COMPARISON )
-	{
-		invalid_setting( fn, "filter", token, FeRule::filterCompStrings,
-				NULL, "comparison" );
-		return 1;
-	}
-
-	comp = (FeRule::FilterComp)i;
-
-	// Remainder of the line is filter regular expression (which may contain
-	// spaces...)
-	//
-	if ( pos < value.size() )
-		what = value.substr( pos );
-
-	m_rules.push_back( FeRule( target, comp, what ) );
 	return 0;
 }
 
-void FeFilter::save( std::ofstream &f ) const
+void FeFilter::save( std::ofstream &f, const char *filter_tag ) const
 {
 	std::string n;
 	if ( m_name.find_first_of( ' ' ) != std::string::npos )
@@ -455,14 +486,54 @@ void FeFilter::save( std::ofstream &f ) const
 		n = m_name;
 
 	f << '\t' << std::setw(20) << std::left
-		<< indexString << ' ' << n << std::endl;
+		<< filter_tag << ' ' << n << std::endl;
+
+	if ( m_sort_by != FeRomInfo::LAST_INDEX )
+	{
+		f << "\t\t" << std::setw(20) << std::left
+			<< indexStrings[1] << ' ' << FeRomInfo::indexStrings[ m_sort_by ] << std::endl;
+	}
+
+	if ( m_reverse_order != false )
+	{
+		f << "\t\t" << std::setw(20) << std::left
+			<< indexStrings[2] << " true" << std::endl;
+	}
+
+	if ( m_list_limit != 0 )
+	{
+		f << "\t\t" << std::setw(20) << std::left
+			<< indexStrings[3] << " " << as_str( m_list_limit ) << std::endl;
+	}
 
 	for ( std::vector<FeRule>::const_iterator itr=m_rules.begin();
 			itr != m_rules.end(); ++itr )
 		(*itr).save( f );
 }
 
-const char *FeListInfo::indexStrings[] =
+bool FeFilter::test_for_target( FeRomInfo::Index target ) const
+{
+	for ( std::vector<FeRule>::const_iterator itr=m_rules.begin(); itr!=m_rules.end(); ++itr )
+	{
+		if ( (*itr).get_target() == target )
+			return true;
+	}
+
+	return false;
+}
+
+void FeFilter::clear()
+{
+	m_name.clear();
+	m_rules.clear();
+	m_rom_index=0;
+	m_list_limit=0;
+	m_size=0;
+	m_sort_by=FeRomInfo::LAST_INDEX;
+	m_reverse_order=false;
+}
+
+const char *FeDisplayInfo::indexStrings[] =
 {
 	"name",
 	"layout",
@@ -470,61 +541,60 @@ const char *FeListInfo::indexStrings[] =
 	NULL
 };
 
-FeListInfo::FeListInfo( const std::string &n )
+const char *FeDisplayInfo::otherStrings[] =
+{
+	"filter",
+	"global_filter",
+	NULL
+};
+
+FeDisplayInfo::FeDisplayInfo( const std::string &n )
 	: m_rom_index( 0 ),
-	m_filter_index( 0 )
+	m_filter_index( 0 ),
+	m_current_config_filter( NULL ),
+	m_global_filter( "" )
 {
 	m_info[ Name ] = n;
 }
 
-const std::string &FeListInfo::get_info( int i ) const
+const std::string &FeDisplayInfo::get_info( int i ) const
 {
 	return m_info[i];
 }
 
-int FeListInfo::get_current_rom_index() const
+int FeDisplayInfo::get_rom_index( int filter_index ) const
 {
-	if ( !m_filters.empty() )
-		return m_filters[ m_filter_index ].get_current_rom_index();
+	if (( filter_index >= 0 ) && ( filter_index < (int)m_filters.size() ))
+		return m_filters[ filter_index ].get_rom_index();
 
 	return m_rom_index;
 }
 
-void FeListInfo::set_current_rom_index( int r )
+void FeDisplayInfo::set_rom_index( int filter_index, int rom_index )
 {
-	if ( !m_filters.empty() )
-		m_filters[ m_filter_index ].set_current_rom_index( r );
+	if (( filter_index >= 0 ) && ( filter_index < (int)m_filters.size() ))
+		m_filters[ filter_index ].set_rom_index( rom_index );
 	else
-		m_rom_index = r;
+		m_rom_index = rom_index;
 }
 
-std::string FeListInfo::get_current_layout_file() const
+std::string FeDisplayInfo::get_current_layout_file() const
 {
 	return m_current_layout_file;
 }
 
-void FeListInfo::set_current_layout_file( const std::string &n )
+void FeDisplayInfo::set_current_layout_file( const std::string &n )
 {
 	m_current_layout_file = n;
 }
 
-void FeListInfo::dump( void ) const
-{
-	std::cout << '\t';
-	for ( int i=0; i < LAST_INDEX; i++ )
-		std::cout << " " << i << "=["
-			<< get_info((Index)i) << "]";
-
-	std::cout << std::endl;
-}
-
-void FeListInfo::set_info( int setting,
+void FeDisplayInfo::set_info( int setting,
          const std::string &value )
 {
 	m_info[ setting ] = value;
 }
 
-int FeListInfo::process_setting( const std::string &setting,
+int FeDisplayInfo::process_setting( const std::string &setting,
          const std::string &value, const std::string &fn )
 {
 	// name is igored here, it gets set directly
@@ -533,7 +603,7 @@ int FeListInfo::process_setting( const std::string &setting,
 		m_info[ Layout ] = value;
 	else if ( setting.compare( indexStrings[Romlist] ) == 0 ) // romlist
 		m_info[ Romlist ] = value;
-	else if ( setting.compare( FeFilter::indexString ) == 0 ) // filter
+	else if ( setting.compare( otherStrings[0] ) == 0 ) // filter
 	{
 		size_t pos=0;
 		std::string name;
@@ -542,34 +612,28 @@ int FeListInfo::process_setting( const std::string &setting,
 		// Create a new filter with the given name
 		//
 		m_filters.push_back( FeFilter( name ) );
-
-		//
-		// Deal with filters in the format from version 1.0, where there could
-		// only be one filter per list (with one filter rule) saved in the
-		// following format:
-		//
-		// filter <target> <comparision> <what>
-		//
-		if ( value.size() > pos )
-			m_filters.back().process_setting( setting, value, fn );
-
-		// In versions after 1.0, filter rules occur under the "rule" tag
+		m_current_config_filter = &(m_filters.back());
 	}
-	else if ( setting.compare( FeRule::indexString ) == 0 ) // (filter) rule
+	else if ( setting.compare( otherStrings[1] ) == 0 ) // global_filter
 	{
-		if ( !m_filters.empty() )
-			m_filters.back().process_setting( setting, value, fn );
+		m_global_filter.clear();
+		m_current_config_filter = &(m_global_filter);
 	}
 	else
 	{
-		invalid_setting( fn, "list", setting, indexStrings + 1 );
-		return 1;
+		if ( m_current_config_filter )
+			m_current_config_filter->process_setting( setting, value, fn );
+		else
+		{
+			invalid_setting( fn, "list", setting, indexStrings + 1, otherStrings );
+			return 1;
+		}
 	}
 
 	return 0;
 }
 
-int FeListInfo::process_state( const std::string &state_string )
+int FeDisplayInfo::process_state( const std::string &state_string )
 {
 	// state string is in format:
 	//
@@ -599,7 +663,7 @@ int FeListInfo::process_state( const std::string &state_string )
 		{
 			std::string sub_val;
 			token_helper( val, sub_pos, sub_val, "," );
-			m_filters[findex].set_current_rom_index( as_int( sub_val ) );
+			m_filters[findex].set_rom_index( as_int( sub_val ) );
 			findex++;
 		} while ( sub_pos < val.size() );
 	}
@@ -619,7 +683,7 @@ int FeListInfo::process_state( const std::string &state_string )
 	return 0;
 }
 
-std::string FeListInfo::state_as_output() const
+std::string FeDisplayInfo::state_as_output() const
 {
 	std::ostringstream state;
 
@@ -629,10 +693,10 @@ std::string FeListInfo::state_as_output() const
 	}
 	else
 	{
-		for ( std::deque<FeFilter>::const_iterator itr=m_filters.begin();
+		for ( std::vector<FeFilter>::const_iterator itr=m_filters.begin();
 			itr != m_filters.end(); ++itr )
 		{
-			state << (*itr).get_current_rom_index() << ",";
+			state << (*itr).get_rom_index() << ",";
 		}
 	}
 
@@ -642,20 +706,23 @@ std::string FeListInfo::state_as_output() const
 	return state.str();
 }
 
-FeFilter *FeListInfo::get_filter( int i )
+FeFilter *FeDisplayInfo::get_filter( int i )
 {
-	if (( i >= 0 ) && ( i < (int)m_filters.size() ))
-		return &(m_filters[i]);
+	if ( i < 0 )
+		return &m_global_filter;
 
-	return NULL;
+	if ( i >= (int)m_filters.size() )
+		return NULL;
+
+	return &(m_filters[i]);
 }
 
-void FeListInfo::append_filter( const FeFilter &f )
+void FeDisplayInfo::append_filter( const FeFilter &f )
 {
 	m_filters.push_back( f );
 }
 
-void FeListInfo::delete_filter( int i )
+void FeDisplayInfo::delete_filter( int i )
 {
 	if (( m_filter_index > 0 ) && ( m_filter_index >= i ))
 		m_filter_index--;
@@ -663,18 +730,18 @@ void FeListInfo::delete_filter( int i )
 	m_filters.erase( m_filters.begin() + i );
 }
 
-void FeListInfo::get_filters_list( std::vector<std::string> &l ) const
+void FeDisplayInfo::get_filters_list( std::vector<std::string> &l ) const
 {
 	l.clear();
 
-	for ( std::deque<FeFilter>::const_iterator itr=m_filters.begin();
+	for ( std::vector<FeFilter>::const_iterator itr=m_filters.begin();
 			itr != m_filters.end(); ++itr )
 	{
 		l.push_back( (*itr).get_name() );
 	}
 }
 
-void FeListInfo::save( std::ofstream &f ) const
+void FeDisplayInfo::save( std::ofstream &f ) const
 {
 	using std::setw;
 	using std::left;
@@ -690,108 +757,12 @@ void FeListInfo::save( std::ofstream &f ) const
 		f << '\t' << setw(20) << left
 			<< indexStrings[Romlist] << ' ' << get_info( Romlist ) << endl;
 
-	for ( std::deque<FeFilter>::const_iterator itr=m_filters.begin();
+	if ( m_global_filter.get_rule_count() > 0 )
+		m_global_filter.save( f, otherStrings[1] );
+
+	for ( std::vector<FeFilter>::const_iterator itr=m_filters.begin();
 			itr != m_filters.end(); ++itr )
-		(*itr).save( f );
-}
-
-FeRomList::FeRomList()
-	: m_filter( NULL ), m_fav_changed( false )
-{
-}
-
-FeRomList::~FeRomList()
-{
-}
-
-void FeRomList::set_filter( const FeFilter *f )
-{
-	m_filter = f;
-}
-
-bool FeRomList::load_from_file( const std::string &filename,
-			const char *sep )
-{
-	m_list.clear();
-	return FeBaseConfigurable::load_from_file( filename, sep );
-}
-
-int FeRomList::process_setting( const std::string &setting,
-				const std::string &value,
-				const std::string &fn )
-{
-	FeRomInfo next_rom( setting );
-	next_rom.process_setting( setting, value, fn );
-
-	if ( m_favs.find( next_rom.get_info( FeRomInfo::Romname ) ) != m_favs.end() )
-		next_rom.set_info( FeRomInfo::Favourite, "1" );
-
-	if (( m_filter == NULL ) || ( m_filter->apply_filter( next_rom ) == true ))
-		m_list.push_back( next_rom );
-
-   return 0;
-}
-
-void FeRomList::load_fav_map( const std::string &filename )
-{
-	m_favs.clear();
-	m_fav_changed=false;
-	m_fav_file = filename;
-
-	std::ifstream myfile( filename.c_str() );
-
-	if ( !myfile.is_open() )
-		return;
-
-	std::set<std::string>::iterator itr=m_favs.begin();
-
-	while ( myfile.good() )
-	{
-		size_t pos=0;
-		std::string line, name;
-
-		getline( myfile, line );
-		token_helper( line, pos, name );
-
-		itr=m_favs.insert( itr, name );
-	}
-
-	myfile.close();
-}
-
-void FeRomList::save_fav_map() const
-{
-	if (( !m_fav_changed ) || ( m_fav_file.empty() ))
-		return;
-
-	std::ofstream outfile( m_fav_file.c_str() );
-	if ( !outfile.is_open() )
-		return;
-
-	std::set<std::string>::const_iterator itr;
-	for ( itr = m_favs.begin(); itr != m_favs.end(); ++itr )
-	{
-		if ( !(*itr).empty() )
-			outfile << (*itr) << std::endl;
-	}
-
-	outfile.close();
-}
-
-void FeRomList::set_fav( int idx, bool fav )
-{
-	if ( fav )
-	{
-		m_list[idx].set_info( FeRomInfo::Favourite, "1" );
-		m_favs.insert( m_list[idx].get_info( FeRomInfo::Romname ) );
-	}
-	else
-	{
-		m_list[idx].set_info( FeRomInfo::Favourite, "" );
-		m_favs.erase( m_list[idx].get_info( FeRomInfo::Romname ) );
-	}
-
-	m_fav_changed=true;
+		(*itr).save( f, otherStrings[0] );
 }
 
 const char *FeEmulatorInfo::indexStrings[] =
@@ -801,10 +772,11 @@ const char *FeEmulatorInfo::indexStrings[] =
 	"args",
 	"rompath",
 	"romext",
+	"system",
+	"info_source",
 	"import_extras",
-	"listxml",
-	"movie_path",
-	"movie_artwork",
+	"minimum_run_time",
+	"exit_hotkey",
 	NULL
 };
 
@@ -813,43 +785,96 @@ const char *FeEmulatorInfo::indexDispStrings[] =
 	"Name",
 	"Executable",
 	"Command Arguments",
-	"Rom Path",
+	"Rom Path(s)",
 	"Rom Extension(s)",
-	"Additional Import Files",
-	"XML Mode",
-	"Movie Path",
-	"Movie Artwork",
+	"System Identifier",
+	"Info Source/Scraper",
+	"Additional Import File(s)",
+	"Minimum Run Time",
+	"Exit Hotkey",
 	NULL
 };
 
 FeEmulatorInfo::FeEmulatorInfo()
+	: m_min_run( 0 )
 {
 }
 
 FeEmulatorInfo::FeEmulatorInfo( const std::string &n )
+: m_name( n ), m_min_run( 0 )
 {
-	m_info[Name] = n;
 }
 
-const std::string &FeEmulatorInfo::get_info( int i ) const
+const std::string FeEmulatorInfo::get_info( int i ) const
 {
-	return m_info[i];
+	switch ( (Index)i )
+	{
+	case Name:
+		return m_name;
+	case Executable:
+		return m_executable;
+	case Command:
+		return m_command;
+	case Rom_path:
+		return vector_to_string( m_paths );
+	case Rom_extension:
+		return vector_to_string( m_extensions );
+	case System:
+		return vector_to_string( m_systems );
+	case Info_source:
+		return m_info_source;
+	case Import_extras:
+		return vector_to_string( m_import_extras );
+	case Minimum_run_time:
+		return as_str( m_min_run );
+	case Exit_hotkey:
+		return m_exit_hotkey;
+	default:
+		return "";
+	}
 }
 
 void FeEmulatorInfo::set_info( enum Index i, const std::string &s )
 {
-	m_info[i] = s;
-	if ( i == Rom_extension )
+	switch ( i )
 	{
-		size_t pos=0;
+	case Name:
+		m_name = s; break;
+	case Executable:
+		m_executable = s; break;
+	case Command:
+		m_command = s; break;
+	case Rom_path:
+		m_paths.clear();
+		string_to_vector( s, m_paths );
+		break;
+	case Rom_extension:
 		m_extensions.clear();
-		do
-		{
-			std::string ext;
-  			token_helper( s, pos, ext );
-			m_extensions.push_back( ext );
-		} while ( pos < s.size() );
+		string_to_vector( s, m_extensions, true );
+		break;
+	case System:
+		m_systems.clear();
+		string_to_vector( s, m_systems );
+		break;
+	case Info_source:
+		m_info_source = s; break;
+	case Import_extras:
+		m_import_extras.clear();
+		string_to_vector( s, m_import_extras );
+		break;
+	case Minimum_run_time:
+		m_min_run = as_int( s );
+		break;
+	case Exit_hotkey:
+		m_exit_hotkey = s; break;
+	default:
+		break;
 	}
+}
+
+const std::vector<std::string> &FeEmulatorInfo::get_paths() const
+{
+	return m_paths;
 }
 
 const std::vector<std::string> &FeEmulatorInfo::get_extensions() const
@@ -857,65 +882,71 @@ const std::vector<std::string> &FeEmulatorInfo::get_extensions() const
 	return m_extensions;
 }
 
+const std::vector<std::string> &FeEmulatorInfo::get_systems() const
+{
+	return m_systems;
+}
+
+const std::vector<std::string> &FeEmulatorInfo::get_import_extras() const
+{
+	return m_import_extras;
+}
+
 bool FeEmulatorInfo::get_artwork( const std::string &label, std::string &artwork ) const
 {
-	std::map<std::string, std::string>::const_iterator it;
-
-	if (( label.empty() ) && ( !m_artwork.empty() ))
-		it = m_artwork.begin();
-	else
-		it=m_artwork.find( label );
-
-	if ( it == m_artwork.end() )
-	{
+	std::map<std::string, std::vector<std::string> >::const_iterator itm;
+	itm = m_artwork.find( label );
+	if ( itm == m_artwork.end() )
 		return false;
-	}
 
-	artwork = (*it).second;
+	artwork = vector_to_string( (*itm).second );
 	return true;
 }
 
-void FeEmulatorInfo::set_artwork( const std::string &label, const std::string &artwork )
+bool FeEmulatorInfo::get_artwork( const std::string &label, std::vector< std::string > &artwork ) const
 {
-	m_artwork[ label ] = artwork;
+	std::map<std::string, std::vector<std::string> >::const_iterator itm;
+	itm = m_artwork.find( label );
+	if ( itm == m_artwork.end() )
+		return false;
+
+	artwork.clear();
+	for ( std::vector<std::string>::const_iterator its = (*itm).second.begin();
+			its != (*itm).second.end(); ++its )
+		artwork.push_back( *its );
+
+	return true;
+}
+
+void FeEmulatorInfo::add_artwork( const std::string &label,
+							const std::string &artwork )
+{
+	// don't clear m_artwork[ label ], it may have entries already
+	// see process_setting() and special case for migrating movie settings
+	// from pre 1.2.2 versions
+	//
+	string_to_vector( artwork, m_artwork[ label ] );
 }
 
 void FeEmulatorInfo::get_artwork_list(
-			std::vector< std::pair< std::string, std::string > > &list ) const
+			std::vector< std::pair< std::string, std::string > > &out_list ) const
 {
-	list.clear();
-	std::map<std::string, std::string>::const_iterator it;
+	out_list.clear();
+	std::map<std::string, std::vector<std::string> >::const_iterator itm;
 
-	for ( it=m_artwork.begin(); it != m_artwork.end(); ++it )
-		list.push_back( std::pair<std::string, std::string>(
-									(*it).first,
-									(*it).second ) );
+	for ( itm=m_artwork.begin(); itm != m_artwork.end(); ++itm )
+	{
+		std::string path_list = vector_to_string( (*itm).second );
+		out_list.push_back( std::pair<std::string,std::string>( (*itm).first, path_list ) );
+	}
 }
 
 void FeEmulatorInfo::delete_artwork( const std::string &label )
 {
-	std::map<std::string, std::string>::iterator it;
-
-	it=m_artwork.find( label );
-	if ( it == m_artwork.end() )
-		return;
-
-	m_artwork.erase( it );
-}
-
-void FeEmulatorInfo::dump( void ) const
-{
-	std::cout << '\t';
-	for ( int i=0; i < LAST_INDEX; i++ )
-		std::cout << " " << i << "=["
-			<< get_info((Index)i) << "]";
-
-	for ( std::map<std::string,std::string>::const_iterator itl=m_artwork.begin();
-			itl != m_artwork.end(); ++itl )
-			std::cout << "artwork " << (*itl).first << "=["
-				<< (*itl).second << "]";
-
-	std::cout << std::endl;
+	std::map<std::string, std::vector<std::string> >::iterator itm;
+	itm = m_artwork.find( label );
+	if ( itm != m_artwork.end() )
+		m_artwork.erase( itm );
 }
 
 int FeEmulatorInfo::process_setting( const std::string &setting,
@@ -935,13 +966,67 @@ int FeEmulatorInfo::process_setting( const std::string &setting,
 		}
 	}
 
+	//
+	// Special case for migration from versions <=1.3.2
+	//
+	if ( setting.compare( "listxml" ) == 0 )
+	{
+		//
+		// value will one of the following:
+		//    mame
+		//    mess <system>
+		//
+		size_t pos=0;
+		token_helper( value, pos, m_info_source, FE_WHITESPACE );
+
+		std::string temp;
+		token_helper( value, pos, temp, "\n" );
+		m_systems.push_back( temp );
+		return 0;
+	}
+
+	//
+	// Special case for migration from versions <=1.2.2
+	//
+	// version 1.2.2 and earlier had "movie_path" and
+	// "movie_artwork" settings which are now deprecated.
+	// Handle them in a way that gets things working in the
+	// new method of configuration...
+	//
+	// Assumption: these settings will always be encountered
+	// before the other artwork settings, which is true unless
+	// the user did manual sorting of the .cfg file...
+	//
+	if ( setting.compare( "movie_path" ) == 0 )
+	{
+		add_artwork( FE_DEFAULT_ARTWORK, value );
+		return 0;
+	}
+	else if ( setting.compare( "movie_artwork" ) == 0 )
+	{
+		if ( value.compare( FE_DEFAULT_ARTWORK ) != 0 )
+		{
+			// We guessed wrong, user didn't have snaps set as the movie artwork
+			// so go in and change the snaps artwork to the one the user configured
+			//
+			std::string temp;
+			get_artwork( FE_DEFAULT_ARTWORK, temp );
+			delete_artwork( FE_DEFAULT_ARTWORK );
+			add_artwork( value, temp );
+		}
+		return 0;
+	}
+	//
+	// End migration code
+	//
+
 	if ( setting.compare( stokens[0] ) == 0 ) // artwork
 	{
 		size_t pos=0;
 		std::string label, path;
-  		token_helper( value, pos, label, FE_WHITESPACE );
-  		token_helper( value, pos, path );
-		m_artwork[ label ] = path;
+		token_helper( value, pos, label, FE_WHITESPACE );
+		token_helper( value, pos, path, "\n" );
+		add_artwork( label, path );
 	}
 	else
 	{
@@ -973,14 +1058,22 @@ void FeEmulatorInfo::save( const std::string &filename ) const
 		//
 		for ( int i=1; i < LAST_INDEX; i++ )
 		{
+			// don't output minimum run time if it is zero
+			if (( i == Minimum_run_time ) && ( m_min_run == 0 ))
+				continue;
+
 			string val = get_info( (Index) i );
 			if ( !val.empty() )
 				outfile << setw(20) << left << indexStrings[i]
 							<< ' ' << val << endl;
 		}
 
-		for ( std::map<string, string>::const_iterator itr=m_artwork.begin();
-					itr != m_artwork.end(); ++itr )
+		std::vector< std::pair< std::string, std::string > > art_list;
+
+		get_artwork_list( art_list );
+
+		for (	std::vector< std::pair< std::string, std::string > >::iterator itr=art_list.begin();
+				itr != art_list.end(); ++itr )
 		{
 			std::string label;
 			if ( (*itr).first.find_first_of( ' ' ) != std::string::npos )
@@ -995,6 +1088,51 @@ void FeEmulatorInfo::save( const std::string &filename ) const
 
 		outfile.close();
    }
+}
+
+std::string FeEmulatorInfo::vector_to_string( const std::vector< std::string > &vec ) const
+{
+	std::string ret_str;
+	for ( unsigned int i=0; i < vec.size(); i++ )
+	{
+		if ( i > 0 ) // there could be empty entries in the vector...
+			ret_str += ";";
+
+		ret_str += vec[i];
+	}
+	return ret_str;
+}
+
+void FeEmulatorInfo::string_to_vector(
+			const std::string &input, std::vector< std::string > &vec, bool allow_empty ) const
+{
+	size_t pos=0;
+	do
+	{
+		std::string val;
+		token_helper( input, pos, val );
+
+		if ( ( !val.empty() ) || allow_empty )
+			vec.push_back( val );
+
+	} while ( pos < input.size() );
+}
+
+void FeEmulatorInfo::gather_rom_names( std::vector<std::string> &name_list ) const
+{
+	for ( std::vector<std::string>::const_iterator itr=m_paths.begin(); itr!=m_paths.end(); ++itr )
+	{
+		std::string path = clean_path( *itr, true );
+
+		for ( std::vector<std::string>::const_iterator ite = m_extensions.begin();
+						ite != m_extensions.end(); ++ite )
+		{
+			if ( (*ite).compare( FE_DIR_TOKEN ) == 0 )
+				get_subdirectories( name_list, path );
+			else
+				get_basename_from_extension( name_list, path, (*ite), true );
+		}
+	}
 }
 
 const char *FeScriptConfigurable::indexString = "param";
@@ -1051,12 +1189,15 @@ void FeScriptConfigurable::save( std::ofstream &f ) const
 	std::map<std::string,std::string>::const_iterator itr;
 	for ( itr=m_params.begin(); itr!=m_params.end(); ++itr )
 	{
-		f << '\t' << std::setw(20) << std::left << indexString << ' '
-			<< (*itr).first << ' ' << (*itr).second << std::endl;
+		if ( !(*itr).first.empty() )
+		{
+			f << '\t' << std::setw(20) << std::left << indexString << ' '
+				<< (*itr).first << ' ' << (*itr).second << std::endl;
+		}
 	}
 }
 
-const char *FePlugInfo::indexStrings[] = { "command","enabled","param",NULL };
+const char *FePlugInfo::indexStrings[] = { "enabled","param",NULL };
 
 FePlugInfo::FePlugInfo( const std::string & n )
 	: m_name( n ), m_enabled( false )
@@ -1066,9 +1207,7 @@ FePlugInfo::FePlugInfo( const std::string & n )
 int FePlugInfo::process_setting( const std::string &setting,
          const std::string &value, const std::string &fn )
 {
-	if ( setting.compare( indexStrings[0] ) == 0 ) // command
-		set_command( value );
-	else if ( setting.compare( indexStrings[1] ) == 0 ) // enabled
+	if ( setting.compare( indexStrings[0] ) == 0 ) // enabled
 		set_enabled( config_str_to_bool( value ) );
 	else if ( FeScriptConfigurable::process_setting( setting, value, fn ) ) // params
 	{
@@ -1080,16 +1219,9 @@ int FePlugInfo::process_setting( const std::string &setting,
 
 void FePlugInfo::save( std::ofstream &f ) const
 {
-	if (( m_command.empty() ) && ( !m_enabled ))
-		return;
-
 	f << std::endl << "plugin" << '\t' << m_name << std::endl;
 
-	if ( !m_command.empty() )
-		f << '\t' << std::setw(20) << std::left
-			<< indexStrings[0] << ' ' << get_command() << std::endl;
-
-	f << '\t' << std::setw(20) << std::left << indexStrings[1]
+	f << '\t' << std::setw(20) << std::left << indexStrings[0]
 		<< ( m_enabled ? " yes" : " no" ) << std::endl;
 
 	FeScriptConfigurable::save( f );

@@ -23,29 +23,34 @@
 #ifndef FE_PRESENTABLE_HPP
 #define FE_PRESENTABLE_HPP
 
-#include <SFML/Graphics.hpp>
+#include <SFML/System/Vector2.hpp>
 
 class FeSettings;
 class FeShader;
+
+namespace sf
+{
+	class Drawable;
+	class Color;
+};
 
 class FeBasePresentable
 {
 private:
 	FeShader *m_shader;
-	const bool m_draw_apply_scale; // true for images, false for texts
 	bool m_visible;
 
 	FeBasePresentable( const FeBasePresentable & );
 	FeBasePresentable &operator=( const FeBasePresentable & );
 
 public:
-	FeBasePresentable( const bool draw_apply_scale );
+	FeBasePresentable();
 	virtual ~FeBasePresentable();
 
 	virtual void on_new_selection( FeSettings * );
 	virtual void on_new_list( FeSettings *, float, float );
 
-	virtual const sf::Drawable &drawable()=0;
+	virtual const sf::Drawable &drawable() const=0;
 	virtual const sf::Vector2f &getPosition() const=0;
 	virtual void setPosition( const sf::Vector2f & )=0;
 	virtual const sf::Vector2f &getSize() const=0;
@@ -56,6 +61,8 @@ public:
 	virtual void setColor( const sf::Color & )=0;
 	virtual int getIndexOffset() const=0;
 	virtual void setIndexOffset( int io )=0;
+	virtual int getFilterOffset() const=0;
+	virtual void setFilterOffset( int io )=0;
 
 	//
 	// Accessor functions used in scripting implementation
@@ -69,6 +76,9 @@ public:
 	float get_height() const;
 	void set_width( float w );
 	void set_height( float h );
+
+	void set_pos(float x, float y);
+	void set_pos(float x, float y, float w, float h);
 
 	int get_r() const;
 	int get_g() const;
@@ -86,13 +96,6 @@ public:
 	FeShader *get_shader() const;
 	FeShader *script_get_shader() const;
 	void script_set_shader( FeShader *s );
-
-	bool get_draw_apply_scale() const { return m_draw_apply_scale; };
 };
-
-void script_do_update( FeBasePresentable * );
-void script_flag_redraw();
-const sf::Font *script_get_font( const std::string & );
-FeShader *script_get_empty_shader();
 
 #endif

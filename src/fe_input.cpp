@@ -1,7 +1,7 @@
 /*
  *
  *  Attract-Mode frontend
- *  Copyright (C) 2013 Andrew Mickelson
+ *  Copyright (C) 2013-15 Andrew Mickelson
  *
  *  This file is part of Attract-Mode.
  *
@@ -508,9 +508,9 @@ const char *FeInputMap::commandStrings[] =
 	"down",
 	"page_up",
 	"page_down",
-	"prev_list",
-	"next_list",
-	"lists_menu",
+	"prev_display",	// was prev_list
+	"next_display",	// was next_list
+	"displays_menu",	// was lists_menu
 	"prev_filter",
 	"next_filter",
 	"filters_menu",
@@ -529,6 +529,16 @@ const char *FeInputMap::commandStrings[] =
 	"add_favourite",
 	"prev_favourite",
 	"next_favourite",
+	"add_tags",
+	"screen_saver",
+	"prev_letter",
+	"next_letter",
+	"custom1",
+	"custom2",
+	"custom3",
+	"custom4",
+	"custom5",
+	"custom6",
 	NULL, // LAST_COMMAND... NULL required here
 	"ambient",
 	"startup",
@@ -543,9 +553,9 @@ const char *FeInputMap::commandDispStrings[] =
 	"Down",
 	"Page Up",
 	"Page Down",
-	"Previous List",
-	"Next List",
-	"Lists Menu",
+	"Previous Display",
+	"Next Display",
+	"Displays Menu",
 	"Previous Filter",
 	"Next Filter",
 	"Filters Menu",
@@ -564,8 +574,18 @@ const char *FeInputMap::commandDispStrings[] =
 	"Add/Remove Favourite",
 	"Previous Favourite",
 	"Next Favourite",
+	"Add/Remove Tags",
+	"Screen Saver",
+	"Previous Letter",
+	"Next Letter",
+	"Custom1",
+	"Custom2",
+	"Custom3",
+	"Custom4",
+	"Custom5",
+	"Custom6",
 	NULL, // LAST_COMMAND... NULL required here
-	"Ambient Sounds",
+	"Ambient Soundtrack",
 	"Startup Sound",
 	"Game Return Sound",
 	NULL
@@ -593,8 +613,8 @@ void FeInputMap::default_mappings()
 		{ FeInputSource::Keyboard, sf::Keyboard::Escape, ExitMenu },
 		{ FeInputSource::Keyboard, sf::Keyboard::Up, Up },
 		{ FeInputSource::Keyboard, sf::Keyboard::Down, Down },
-		{ FeInputSource::Keyboard, sf::Keyboard::Left, PrevList },
-		{ FeInputSource::Keyboard, sf::Keyboard::Right, NextList },
+		{ FeInputSource::Keyboard, sf::Keyboard::Left, PrevDisplay },
+		{ FeInputSource::Keyboard, sf::Keyboard::Right, NextDisplay },
 		{ FeInputSource::Keyboard, sf::Keyboard::Return, Select },
 		{ FeInputSource::Keyboard, sf::Keyboard::LControl, Select },
 		{ FeInputSource::Keyboard, sf::Keyboard::Tab, Configure },
@@ -625,6 +645,22 @@ FeInputMap::Command FeInputMap::map_input( const sf::Event &e, const sf::IntRect
 		return LAST_COMMAND;
 
 	return (*it).second;
+}
+
+bool FeInputMap::get_current_state( FeInputMap::Command c, int joy_thresh ) const
+{
+	std::map< FeInputSource, Command >::const_iterator it;
+
+	for ( it=m_map.begin(); it!=m_map.end(); ++it )
+	{
+		if ( (*it).second == c )
+		{
+			if ( (*it).first.get_current_state( joy_thresh ) )
+				return true;
+		}
+	}
+
+	return false;
 }
 
 void FeInputMap::get_mappings( std::vector< FeMapping > &mappings ) const
@@ -734,19 +770,27 @@ void FeInputMap::save( std::ofstream &f ) const
 
 FeInputMap::Command FeInputMap::string_to_command( const std::string &s )
 {
-	Command cmd( LAST_COMMAND );
 	int i=0;
 
 	while ( FeInputMap::commandStrings[i] != NULL )
 	{
 		if ( s.compare( commandStrings[i] ) == 0 )
-		{
-			cmd = (Command)i;
-			break;
-		}
+			return (Command)i;
+
 		i++;
 	}
-	return cmd;
+
+	//
+	// For backward compatability... with 1.5 the "*_list" was switched to "*_display"
+	//
+	if ( s.compare( "prev_list" ) == 0 )
+		return PrevDisplay;
+	else if ( s.compare( "next_list" ) == 0 )
+		return NextDisplay;
+	else if ( s.compare( "displays_menu" ) == 0 )
+		return DisplaysMenu;
+
+	return LAST_COMMAND;
 }
 
 // Note the alignment of settingStrings matters in fe_config.cpp

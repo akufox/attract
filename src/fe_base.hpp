@@ -30,20 +30,26 @@ extern const char *FE_COPYRIGHT;
 extern const char *FE_VERSION;
 extern const int FE_VERSION_NUM;
 extern const char *FE_WHITESPACE;
+extern const char *FE_DIR_TOKEN;
+extern const char *FE_DEFAULT_ARTWORK;
+
+extern const char *FE_EMULATOR_SUBDIR;
+extern const char *FE_EMULATOR_FILE_EXTENSION;
+extern const char *FE_EMULATOR_DEFAULT;
 
 class FeBaseConfigurable
 {
 protected:
-	void invalid_setting( 
+	void invalid_setting(
 			const std::string &filename,
-			const char *base, 
-			const std::string &setting, 
+			const char *base,
+			const std::string &setting,
 			const char **valid1,
 			const char **valid2=NULL,
 			const char *label="setting" );
 
 public:
-	virtual int process_setting( const std::string &setting, 
+	virtual int process_setting( const std::string &setting,
 								const std::string &value,
 								const std::string &filename )=0;
 

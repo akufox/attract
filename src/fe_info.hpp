@@ -1,7 +1,7 @@
 /*
  *
  *  Attract-Mode frontend
- *  Copyright (C) 2013 Andrew Mickelson
+ *  Copyright (C) 2013-15 Andrew Mickelson
  *
  *  This file is part of Attract-Mode.
  *
@@ -25,10 +25,9 @@
 
 #include "fe_base.hpp"
 #include <map>
-#include <set>
 #include <vector>
-#include <deque>
 
+extern const char FE_TAGS_SEP;
 struct SQRex;
 
 //
@@ -52,13 +51,19 @@ public:
 		Status,
 		DisplayCount,
 		DisplayType,
+		AltRomname,
+		AltTitle,
+		Extra,
 		Favourite,		// everything from Favourite on is not loaded from romlist
+		Tags,
+		PlayedCount,
+		PlayedTime,
+		FileIsAvailable,
 		LAST_INDEX
 	};
 
-	// The Favourite and Category indexes get repurposed at certain stages of mess
+	// The Category index gets repurposed at certain stages of mess
 	// romlist building/importing...
-	static const Index BuildAltName;
 	static const Index BuildScratchPad;
 
 	static const char *indexStrings[];
@@ -69,39 +74,30 @@ public:
 	const std::string &get_info( int ) const;
 	void set_info( enum Index, const std::string & );
 
+	void append_tag( const std::string &tag );
+
 	int process_setting( const std::string &setting,
 								const std::string &value,
 								const std::string &fn );
-	void dump( void ) const;
 	std::string as_output( void ) const;
+
+	void load_stats( const std::string &path );
+	void update_stats( const std::string &path, int count_incr, int played_incr );
 
 	void clear();
 
+	bool operator==( const FeRomInfo & ) const;
+
 private:
-	FeRomInfo &operator=( const FeRomInfo & );
 	std::string get_info_escaped( int ) const;
 
 	std::string m_info[LAST_INDEX];
 };
 
 //
-// Comparison used when sorting/merging FeRomLists
-//
-class FeRomListCompare
-{
-private:
-	static SQRex *m_rex;
-
-public:
-	static void init_rex( const std::string &re );
-	static void close_rex();
-	static bool cmp( const FeRomInfo &one, const FeRomInfo &two );
-};
-
-//
 // Class for a single rule in a list filter
 //
-class FeRule
+class FeRule : public FeBaseConfigurable
 {
 public:
 	enum FilterComp {
@@ -112,7 +108,6 @@ public:
 		LAST_COMPARISON
 	};
 
-	static const char *indexString;
 	static const char *filterCompStrings[];
 	static const char *filterCompDisplayStrings[];
 
@@ -135,6 +130,9 @@ public:
 
 	void set_values( FeRomInfo::Index i, FilterComp c, const std::string &w );
 
+	int process_setting( const std::string &,
+         const std::string &value, const std::string &fn );
+
 private:
 	FeRomInfo::Index m_filter_target;
 	FilterComp m_filter_comp;
@@ -148,7 +146,7 @@ private:
 class FeFilter : public FeBaseConfigurable
 {
 public:
-	static const char *indexString;
+	static const char *indexStrings[];
 
 	FeFilter( const std::string &name );
 	void init();
@@ -158,25 +156,46 @@ public:
 				const std::string &value,
 				const std::string &fn );
 
-	void save( std::ofstream & ) const;
+	void save( std::ofstream &, const char *filter_tag ) const;
 	const std::string &get_name() const { return m_name; };
 	void set_name( const std::string &n ) { m_name = n; };
 
-	int get_current_rom_index() const { return m_rom_index; };
-	void set_current_rom_index( int i ) { m_rom_index=i; };
+	int get_rom_index() const { return m_rom_index; };
+	void set_rom_index( int i ) { m_rom_index=i; };
+
+	int get_size() const { return m_size; };
+	void set_size( int s ) { m_size=s; };
 
 	std::vector<FeRule> &get_rules() { return m_rules; };
+	int get_rule_count() const { return m_rules.size(); };
+
+	FeRomInfo::Index get_sort_by() const { return m_sort_by; }
+	bool get_reverse_order() const { return m_reverse_order; }
+	int get_list_limit() const { return m_list_limit; }
+
+	void set_sort_by( FeRomInfo::Index i ) { m_sort_by=i; }
+	void set_reverse_order( bool r ) { m_reverse_order=r; }
+	void set_list_limit( int p ) { m_list_limit=p; }
+
+	bool test_for_target( FeRomInfo::Index target ) const; // do changes to the specified target affect this filter?
+
+	void clear();
 
 private:
 	std::string m_name;
 	std::vector<FeRule> m_rules;
 	int m_rom_index;
+	int m_list_limit; // limit the number of list entries if non-zero.  Positive value limits to the first
+							// x values, Negative value limits to the last abs(x) values.
+	int m_size;
+	FeRomInfo::Index m_sort_by;
+	bool m_reverse_order;
 };
 
 //
-// Class for storing information regarding a specific Attract-Mode list
+// Class for storing information regarding a specific Attract-Mode display
 //
-class FeListInfo : public FeBaseConfigurable
+class FeDisplayInfo : public FeBaseConfigurable
 {
 public:
 
@@ -187,8 +206,9 @@ public:
 		LAST_INDEX
 	};
 	static const char *indexStrings[];
+	static const char *otherStrings[];
 
-	FeListInfo( const std::string &name );
+	FeDisplayInfo( const std::string &name );
 
 	const std::string &get_info( int ) const;
 	void set_info( int setting, const std::string &value );
@@ -200,73 +220,34 @@ public:
 	int process_state( const std::string &state_string );
 	std::string state_as_output() const;
 
-	void dump( void ) const;
-
 	void set_current_filter_index( int i ) { m_filter_index=i; };
 	int get_current_filter_index() const { return m_filter_index; };
 	int get_filter_count() const { return m_filters.size(); };
-	FeFilter *get_filter( int );
+	FeFilter *get_filter( int ); // use get_filter( -1 ) to get global filter
 	void append_filter( const FeFilter &f );
 	void delete_filter( int i );
 	void get_filters_list( std::vector<std::string> &l ) const;
 
+	FeFilter *get_global_filter() { return &m_global_filter; };
+
 	std::string get_current_layout_file() const;
 	void set_current_layout_file( const std::string & );
 
-	int get_current_rom_index() const;
-	void set_current_rom_index( int );
+	int get_rom_index( int filter_index ) const;
+	void set_rom_index( int filter_index, int rom_index );
 
 	void save( std::ofstream & ) const;
 
 private:
 	std::string m_info[LAST_INDEX];
 	std::string m_current_layout_file;
-	int m_rom_index; // only used if there are no filters on this list
+	int m_rom_index; // only used if there are no filters on this display
 	int m_filter_index;
+	FeFilter *m_current_config_filter;
 
-	std::deque< FeFilter > m_filters;
+	std::vector< FeFilter > m_filters;
+	FeFilter m_global_filter;
 };
-
-class FeRomList : protected FeBaseConfigurable
-{
-private:
-	std::deque<FeRomInfo> m_list;
-	std::set<std::string> m_favs;
-	std::string m_fav_file;
-	const FeFilter *m_filter;
-	bool m_fav_changed;
-
-	FeRomList( const FeRomList & );
-	FeRomList &operator=( const FeRomList & );
-
-	bool apply_filter( const FeRomInfo &rom ) const;
-
-public:
-	FeRomList();
-	~FeRomList();
-
-	void clear();
-
-	void set_filter( const FeFilter *f );
-
-	// base class has this function too!
-	bool load_from_file( const std::string &filename,
-					const char *sep=FE_WHITESPACE );
-
-	int process_setting( const std::string &setting,
-		const std::string &value,
-		const std::string &fn );
-
-	void load_fav_map( const std::string &filename );
-	void save_fav_map() const;
-	void set_fav( int idx, bool fav );
-
-	bool empty() const { return m_list.empty(); };
-	int size() const { return (int)m_list.size(); };
-	const FeRomInfo &operator[](int idx) const { return m_list[idx]; };
-	FeRomInfo &operator[](int idx) { return m_list[idx]; };
-};
-
 
 //
 // Class for storing information regarding a specific emulator
@@ -281,11 +262,12 @@ public:
 		Executable,
 		Command,
 		Rom_path,
-		Rom_extension,  // this value gets split and duplicated in m_extensions
+		Rom_extension,
+		System,
+		Info_source,
 		Import_extras,
-		Listxml,
-		Movie_path,
-		Movie_artwork,
+		Minimum_run_time,
+		Exit_hotkey,
 		LAST_INDEX
 	};
 	static const char *indexStrings[];
@@ -294,27 +276,60 @@ public:
 	FeEmulatorInfo();
 	FeEmulatorInfo( const std::string &name );
 
-	const std::string &get_info( int ) const;
+	const std::string get_info( int ) const;
 	void set_info( enum Index, const std::string & );
 
-	bool get_artwork( const std::string &, std::string & ) const;
-	void set_artwork( const std::string &, const std::string & );
+	// get artwork path.  Multiple paths are semicolon separated
+	bool get_artwork( const std::string &label, std::string &paths ) const;
+
+	// get artwork paths in the provided vector
+	bool get_artwork( const std::string &label, std::vector< std::string > &paths ) const;
+
+	// add artwork paths to the specified artwork
+	void add_artwork( const std::string &label, const std::string &paths );
+
+	// get a list of all artworks labels with the related paths in a string
 	void get_artwork_list( std::vector<std::pair<std::string,std::string> > & ) const;
+
 	void delete_artwork( const std::string & );
 
+	const std::vector<std::string> &get_paths() const;
 	const std::vector<std::string> &get_extensions() const;
+	const std::vector<std::string> &get_systems() const;
+	const std::vector<std::string> &get_import_extras() const;
 
 	int process_setting( const std::string &setting,
 								const std::string &value,
 								const std::string &filename );
-	void dump( void ) const;
 
 	void save( const std::string &filename ) const;
 
+	void gather_rom_names( std::vector<std::string> &name_list ) const;
+
 private:
-	std::string m_info[LAST_INDEX];
-	std::map<std::string, std::string> m_artwork;
+	std::string vector_to_string( const std::vector< std::string > &vec ) const;
+	void string_to_vector( const std::string &input, std::vector< std::string > &vec,
+								bool allow_empty = false ) const;
+
+	std::string m_name;
+	std::string m_executable;
+	std::string m_command;
+	std::string m_info_source;
+	std::string m_exit_hotkey;
+
+	std::vector<std::string> m_paths;
 	std::vector<std::string> m_extensions;
+	std::vector<std::string> m_systems;
+	std::vector<std::string> m_import_extras;
+
+	int m_min_run;
+
+	//
+	// Considered using a std::multimap here but C++98 doesn't guarantee the
+	// relative order of equivalent values, so we do a map of vectors so that
+	// we can maintain the precedence ordering of our artwork paths...
+	//
+	std::map<std::string, std::vector<std::string> > m_artwork;
 };
 
 class FeScriptConfigurable : public FeBaseConfigurable
@@ -345,9 +360,6 @@ public:
 	FePlugInfo( const std::string &name );
 	const std::string &get_name() const { return m_name; };
 
-	const std::string &get_command() const { return m_command; };
-	void set_command( const std::string &c ) { m_command=c; };
-
 	bool get_enabled() const { return m_enabled; };
 	void set_enabled( bool e ) { m_enabled=e; };
 
@@ -361,7 +373,6 @@ private:
 	static const char *indexStrings[];
 
 	std::string m_name;
-	std::string m_command;
 	bool m_enabled;
 };
 

@@ -29,7 +29,7 @@
 
 class FeSettings;
 class FeEmulatorInfo;
-class FeListInfo;
+class FeDisplayInfo;
 class FeFilter;
 class FeRule;
 class FePlugInfo;
@@ -59,14 +59,23 @@ private:
 
 public:
 	int type;					// see Opt namespace for values
-	int opaque;					// private variable available to the menu to track
 	std::string setting;		// the name of the setting
 	std::string help_msg;	// the help message for this option
 	std::vector<std::string> values_list; // list options
 
+	int opaque;					// private variables available to the menu to track menu options
+	std::string opaque_str;
+
 	FeMenuOpt(int t,
 		const std::string &set,
 		const std::string &val="" );
+
+	FeMenuOpt(int t,
+		const std::string &set,
+		const std::string &val,
+		const std::string &help,
+		int opq,
+		const std::string &opq_str );
 
 	void set_value( const std::string & );
 	void set_value( int );
@@ -176,23 +185,17 @@ public:
 class FeScriptConfigMenu : public FeBaseConfigMenu
 {
 protected:
-	void get_options_helper(
-		FeConfigContext &ctx,
-		std::string &gen_help,
-		FeScriptConfigurable &configurable,
-		const std::string &script_file );
+
+	virtual bool save( FeConfigContext &ctx )=0;
 
 	bool on_option_select(
 			FeConfigContext &ctx, FeBaseConfigMenu *& submenu );
 
-	bool save_helper( FeConfigContext &ctx,
-		FeScriptConfigurable &configurable );
+	bool save_helper( FeConfigContext &ctx );
 
-private:
-	static const int OPAQUE_BASE=100;
-	static const int INPUT_OPAQUE_BASE=200;
-
-	std::vector<std::string>m_params;
+	FeScriptConfigurable *m_configurable;
+	std::string m_file_path;
+	std::string m_file_name;
 };
 
 class FeLayoutEditMenu : public FeScriptConfigMenu
@@ -282,7 +285,7 @@ public:
 class FeFilterEditMenu : public FeBaseConfigMenu
 {
 private:
-	FeListInfo *m_list;
+	FeDisplayInfo *m_display;
 	int m_index;
 	FeRuleEditMenu m_rule_menu;
 
@@ -293,31 +296,31 @@ public:
 	bool on_option_select( FeConfigContext &ctx,
 						FeBaseConfigMenu *& submenu );
 	bool save( FeConfigContext &ctx );
-	void set_filter_index( FeListInfo *l, int i );
+	void set_filter_index( FeDisplayInfo *d, int i );
 };
 
-class FeListEditMenu : public FeBaseConfigMenu
+class FeDisplayEditMenu : public FeBaseConfigMenu
 {
 private:
 	FeFilterEditMenu m_filter_menu;
 	FeLayoutEditMenu m_layout_menu;
-	FeListInfo *m_list;
-	std::string m_name;
+	FeDisplayInfo *m_display;
+	int m_index; // the index for m_display in FeSettings' master list
 
 public:
-	FeListEditMenu();
+	FeDisplayEditMenu();
 
 	void get_options( FeConfigContext &ctx );
 	bool on_option_select( FeConfigContext &ctx,
 						FeBaseConfigMenu *& submenu );
 	bool save( FeConfigContext &ctx );
-	void set_list( FeListInfo *list );
+	void set_display( FeDisplayInfo *d, int index );
 };
 
-class FeListSelMenu : public FeBaseConfigMenu
+class FeDisplaySelMenu : public FeBaseConfigMenu
 {
 private:
-	FeListEditMenu m_edit_menu;
+	FeDisplayEditMenu m_edit_menu;
 
 public:
 	void get_options( FeConfigContext &ctx );
@@ -399,7 +402,7 @@ class FeConfigMenu : public FeBaseConfigMenu
 {
 private:
 	FeEmulatorSelMenu m_emu_menu;
-	FeListSelMenu m_list_menu;
+	FeDisplaySelMenu m_list_menu;
 	FeInputSelMenu m_input_menu;
 	FeSoundMenu m_sound_menu;
 	FeSaverEditMenu m_saver_menu;

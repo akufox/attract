@@ -1,7 +1,7 @@
 /*
  *
  *  Attract-Mode frontend
- *  Copyright (C) 2013 Andrew Mickelson
+ *  Copyright (C) 2013-15 Andrew Mickelson
  *
  *  This file is part of Attract-Mode.
  *
@@ -25,6 +25,7 @@
 
 #include <vector>
 #include <string>
+#include <SFML/Config.hpp>
 
 #ifdef FE_DEBUG
 #include <cassert>
@@ -47,12 +48,23 @@ int perform_substitution( std::string &target,
                            const std::string &to );
 
 //
+//
+std::string name_with_brackets_stripped( const std::string &name );
+
+//
 // Case insensitive check if filename has the specified extension/ending.
 //
 bool tail_compare(
          const std::string &filename,
          const std::string &extension );
 
+//
+// Case insensitive compare of one and two
+// returns 0 if equal
+//
+int icompare(
+			const std::string &one,
+			const std::string &two );
 
 typedef bool (*output_callback_fn)( const char *, void * );
 //
@@ -67,6 +79,10 @@ typedef bool (*output_callback_fn)( const char *, void * );
 //					doesn't care what this is.
 //		"block" - if true, don't return until program is done execution
 //					if false, "cb" and "opaque" are ignored
+//		"exit_hotkey" - hotkey that when pressed will force exit of program
+//					(use NULL for no hotkey checking)
+//		"joy_thresh" - joystick threshold, only used if exit_hotkey is mapped to
+//					a joystick
 //
 //	Returns true if program ran successfully
 //
@@ -74,17 +90,28 @@ bool run_program( const std::string &prog,
 	const::std::string &args,
 	output_callback_fn cb = NULL,
 	void *opaque=NULL,
-	bool block=true );
+	bool block=true,
+	const std::string &exit_hotkey="",
+	int joy_thresh=0 );
 
 //
 // Utility functions for file processing:
 //
-// return true if file exists
+// return true if file exists (file or directory)
 bool file_exists( const std::string &file );
+
+// return true if specified path is an existing directory
+bool directory_exists( const std::string &file );
+
+// return true if the specified path is a relative path
+bool is_relative_path( const std::string &file );
 
 // clean the path string for usage.  Performs substitution of $HOME etc...
 std::string clean_path( const std::string &path,
 		bool require_trailing_slash = false );
+
+// return path as an absolute path
+std::string absolute_path( const std::string &path );
 
 //
 // Search "base_path"'s dir structure for a file with the given "base_name".
@@ -103,8 +130,7 @@ bool search_for_file( const std::string &base_path,
 //
 bool get_subdirectories(
 			std::vector<std::string> &list,
-			const std::string &path,
-			bool append_trailing_slash = false );
+			const std::string &path );
 //
 // Return "list" of the base filenames in "path" where the file extension
 // is in the vector "extensions"
@@ -114,24 +140,20 @@ bool get_subdirectories(
 bool get_basename_from_extension(
 			std::vector<std::string> &list,
 			const std::string &path,
-			const std::vector< std::string > &extensions,
+			const std::string &extension,
 			bool strip_extension = true );
 
 //
-// Return "list" of filenames in "path" where the file basename is in "baselist"
-// Ordering of returned "list" corresponds to ordering of baselist
+// Return "in_list" of filenames in "path" where the base filename is "base_name"
 //
-// if filter_excludes is false and ext_filter is non-NULL: Only include
-// files with an extension in the "ext_filter" NULL terminated list.
+// if filter is non-NULL: Only include files with an extension in the "ext_filter"
+// NULL terminated list in "in_list".  All others go in "out_list".
 //
-// if filter_excludes is true and ext_filter is non-NULL: Don't include
-// files with an extension in the "ext_filter" NULL terminated list.
-//
-bool get_filename_from_base( std::vector<std::string> &list,
+bool get_filename_from_base( std::vector<std::string> &in_list,
+				std::vector<std::string> &out_list,
 				const std::string &path,
-				const std::vector<std::string> &base_list,
-				const char **ext_filter=NULL,
-				bool filter_excludes=false );
+				const std::string &base_name,
+				const char **ext_filter=NULL );
 
 //
 // Get a filename that does not currently exist.
@@ -164,6 +186,11 @@ void delete_file( const std::string &file );
 std::string as_str( int i );
 
 //
+// Return float as a string
+//
+std::string as_str( float f, int decimals=3 );
+
+//
 // Return string as integer
 //
 int as_int( const std::string &s );
@@ -177,6 +204,12 @@ bool config_str_to_bool( const std::string &s );
 // Return the name of the operating system.
 //
 const char *get_OS_string();
+
+//
+// return the contents of the clipboard (if implemented for OS)
+//
+std::basic_string<sf::Uint32> clipboard_get_content();
+
 
 #ifndef NO_MOVIE
 //

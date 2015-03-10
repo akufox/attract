@@ -8,6 +8,7 @@
 		<Build>
 			<Target title="Debug">
 				<Option output="../attract-dbg" prefix_auto="1" extension_auto="1" />
+				<Option working_dir="../." />
 				<Option object_output="../obj/debug/" />
 				<Option type="1" />
 				<Option compiler="gcc" />
@@ -16,15 +17,16 @@
 					<Add option="-DFE_DEBUG" />
 				</Compiler>
 				<Linker>
-					<Add library="sfml-audio-d" />
 					<Add library="sfml-graphics-d" />
 					<Add library="sfml-window-d" />
+					<Add library="sfml-network-d" />
 					<Add library="sfml-system-d" />
 					<Add library="swscale" />
 					<Add library="avformat" />
 					<Add library="avcodec" />
 					<Add library="avresample" />
 					<Add library="avutil" />
+					<Add library="openal32" />
 				</Linker>
 			</Target>
 			<Target title="Release">
@@ -36,15 +38,16 @@
 					<Add option="-O2" />
 				</Compiler>
 				<Linker>
-					<Add library="sfml-audio" />
 					<Add library="sfml-graphics" />
 					<Add library="sfml-window" />
+					<Add library="sfml-network" />
 					<Add library="sfml-system" />
 					<Add library="swscale" />
 					<Add library="avformat" />
 					<Add library="avcodec" />
 					<Add library="avresample" />
 					<Add library="avutil" />
+					<Add library="openal32" />
 				</Linker>
 			</Target>
 			<Target title="Release Static">
@@ -59,7 +62,6 @@
 					<Add option="-DSFML_STATIC" />
 				</Compiler>
 				<Linker>
-					<Add library="sfml-audio-s" />
 					<Add library="sfml-graphics-s" />
 					<Add library="sfml-window-s" />
 					<Add library="sfml-system-s" />
@@ -68,6 +70,7 @@
 					<Add library="avcodec" />
 					<Add library="avresample" />
 					<Add library="avutil" />
+					<Add library="openal32" />
 				</Linker>
 			</Target>
 			<Target title="Release Static - NOMOVIE">
@@ -93,15 +96,67 @@
 		<Compiler>
 			<Add option="-Wall" />
 			<Add option="-DHAVE_MEMMOVE" />
+			<Add option="-DUSE_AVRESAMPLE" />
 			<Add directory="../../SFML/include" />
 			<Add directory="../../ffmpeg/include" />
 			<Add directory="../extlibs/squirrel/include" />
 			<Add directory="../extlibs/sqrat/include" />
+			<Add directory="../extlibs/audio/include" />
 		</Compiler>
 		<Linker>
 			<Add directory="../../SFML/lib" />
 			<Add directory="../../FFMPEG/lib" />
 		</Linker>
+		<Unit filename="../extlibs/audio/Audio/ALCheck.cpp">
+			<Option target="Debug" />
+			<Option target="Release" />
+			<Option target="Release Static" />
+		</Unit>
+		<Unit filename="../extlibs/audio/Audio/AudioDevice.cpp">
+			<Option target="Debug" />
+			<Option target="Release" />
+			<Option target="Release Static" />
+		</Unit>
+		<Unit filename="../extlibs/audio/Audio/Listener.cpp">
+			<Option target="Debug" />
+			<Option target="Release" />
+			<Option target="Release Static" />
+		</Unit>
+		<Unit filename="../extlibs/audio/Audio/SoundSource.cpp">
+			<Option target="Debug" />
+			<Option target="Release" />
+			<Option target="Release Static" />
+		</Unit>
+		<Unit filename="../extlibs/audio/Audio/SoundStream.cpp">
+			<Option target="Debug" />
+			<Option target="Release" />
+			<Option target="Release Static" />
+		</Unit>
+		<Unit filename="../extlibs/audio/include/Audio/ALCheck.hpp">
+			<Option target="Debug" />
+			<Option target="Release" />
+			<Option target="Release Static" />
+		</Unit>
+		<Unit filename="../extlibs/audio/include/Audio/AudioDevice.hpp">
+			<Option target="Debug" />
+			<Option target="Release" />
+			<Option target="Release Static" />
+		</Unit>
+		<Unit filename="../extlibs/audio/include/Audio/Listener.hpp">
+			<Option target="Debug" />
+			<Option target="Release" />
+			<Option target="Release Static" />
+		</Unit>
+		<Unit filename="../extlibs/audio/include/Audio/SoundSource.hpp">
+			<Option target="Debug" />
+			<Option target="Release" />
+			<Option target="Release Static" />
+		</Unit>
+		<Unit filename="../extlibs/audio/include/Audio/SoundStream.hpp">
+			<Option target="Debug" />
+			<Option target="Release" />
+			<Option target="Release Static" />
+		</Unit>
 		<Unit filename="../extlibs/expat/expat.h" />
 		<Unit filename="../extlibs/expat/xmlparse.c">
 			<Option compilerVar="CC" />
@@ -193,6 +248,8 @@
 		<Unit filename="fe_present.hpp" />
 		<Unit filename="fe_presentable.cpp" />
 		<Unit filename="fe_presentable.hpp" />
+		<Unit filename="fe_romlist.cpp" />
+		<Unit filename="fe_romlist.hpp" />
 		<Unit filename="fe_settings.cpp" />
 		<Unit filename="fe_settings.hpp" />
 		<Unit filename="fe_shader.cpp" />
@@ -205,6 +262,10 @@
 		<Unit filename="fe_util.hpp" />
 		<Unit filename="fe_util_sq.cpp" />
 		<Unit filename="fe_util_sq.hpp" />
+		<Unit filename="fe_vm.cpp" />
+		<Unit filename="fe_vm.hpp" />
+		<Unit filename="fe_window.cpp" />
+		<Unit filename="fe_window.hpp" />
 		<Unit filename="fe_xml.cpp" />
 		<Unit filename="fe_xml.hpp" />
 		<Unit filename="main.cpp" />
@@ -214,6 +275,8 @@
 			<Option target="Release Static" />
 		</Unit>
 		<Unit filename="media.hpp" />
+		<Unit filename="sprite.cpp" />
+		<Unit filename="sprite.hpp" />
 		<Unit filename="tp.cpp" />
 		<Unit filename="tp.hpp" />
 		<Extensions>

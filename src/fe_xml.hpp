@@ -1,7 +1,7 @@
 /*
  *
  *  Attract-Mode frontend
- *  Copyright (C) 2013 Andrew Mickelson
+ *  Copyright (C) 2013-15 Andrew Mickelson
  *
  *  This file is part of Attract-Mode.
  *
@@ -24,10 +24,10 @@
 #define FE_XML_HPP
 
 #include <string>
-#include <list>
+#include <set>
 #include <map>
 #include <vector>
-#include "fe_info.hpp"
+#include "fe_romlist.hpp"
 
 class FeXMLParser
 {
@@ -73,18 +73,21 @@ public:
 class FeMameXMLParser : private FeXMLParser
 {
 public:
-	FeMameXMLParser( std::list<FeRomInfo> &, UiUpdate u=NULL, void *d=NULL );
+	FeMameXMLParser( FeRomInfoListType &, UiUpdate u=NULL, void *d=NULL, bool full=false );
 	bool parse( const std::string &base_command );
 
 private:
-	std::list<FeRomInfo> &m_romlist;
-	std::list<FeRomInfo>::iterator m_itr;
-	std::map<const char *, std::list<FeRomInfo>::iterator, FeMapComp> m_map;
-	std::vector<std::list<FeRomInfo>::iterator> m_discarded;
+	FeRomInfoListType &m_romlist;
+	FeRomInfoListType::iterator m_itr;
+	std::map<const char *, FeRomInfoListType::iterator, FeMapComp> m_map;
+	std::vector<FeRomInfoListType::iterator> m_discarded;
 	int m_count;
 	int m_percent;
 	int m_displays;
 	bool m_collect_data;
+	bool m_chd;
+	bool m_mechanical;
+	bool m_full;
 
 	void start_element( const char *, const char ** );
 	void end_element( const char * );
@@ -93,18 +96,21 @@ private:
 class FeMessXMLParser : private FeXMLParser
 {
 public:
-	FeMessXMLParser( std::list<FeRomInfo> &, UiUpdate u=NULL, void *d=NULL );
+	FeMessXMLParser( FeRomInfoListType &, UiUpdate u=NULL, void *d=NULL, bool full=false );
 	bool parse( const std::string &command, const std::string &args );
 
 private:
-	std::list<FeRomInfo> &m_romlist;
-	std::list<FeRomInfo>::iterator m_itr;
+	FeRomInfoListType &m_romlist;
+	FeRomInfoListType::iterator m_itr;
 	std::string m_name;
 	std::string m_description;
 	std::string m_year;
 	std::string m_man;
 	std::string m_fuzzydesc;
 	std::string m_cloneof;
+	std::string m_altname;
+	std::string m_alttitle;
+	bool m_full;
 
 	void set_info_values( FeRomInfo &r );
 
@@ -116,16 +122,42 @@ private:
 class FeHyperSpinXMLParser : private FeXMLParser
 {
 public:
-	FeHyperSpinXMLParser( std::list<FeRomInfo> & );
+	FeHyperSpinXMLParser( FeRomInfoListType & );
 	bool parse( const std::string &filename );
 
 private:
 	void start_element( const char *, const char ** );
 	void end_element( const char * );
 
-	std::list<FeRomInfo> &m_romlist;
+	FeRomInfoListType &m_romlist;
 	FeRomInfo m_current_rom;
 	bool m_collect_data;
 };
 
+class FeGameDBPlatformParser : private FeXMLParser
+{
+public:
+	bool parse( const std::string &filename );
+
+	std::set<std::string> m_set;
+
+private:
+	void start_element( const char *, const char ** );
+	void end_element( const char * );
+};
+
+class FeGameDBParser : private FeXMLParser
+{
+public:
+	FeGameDBParser( FeRomInfo & );
+	bool parse( const std::string &data, bool &exact_match );
+
+private:
+	void start_element( const char *, const char ** );
+	void end_element( const char * );
+
+	FeRomInfo &m_rom;
+	bool m_collect_data;
+	bool m_exact_match;
+};
 #endif

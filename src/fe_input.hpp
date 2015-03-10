@@ -1,7 +1,7 @@
 /*
  *
  *  Attract-Mode frontend
- *  Copyright (C) 2013 Andrew Mickelson
+ *  Copyright (C) 2013-15 Andrew Mickelson
  *
  *  This file is part of Attract-Mode.
  *
@@ -110,9 +110,9 @@ public:
 		Down,
 		PageUp,
 		PageDown,
-		PrevList,
-		NextList,
-		ListsMenu,
+		PrevDisplay,
+		NextDisplay,
+		DisplaysMenu,
 		PrevFilter,
 		NextFilter,
 		FiltersMenu,
@@ -131,6 +131,16 @@ public:
 		ToggleFavourite,
 		PrevFavourite,
 		NextFavourite,
+		ToggleTags,
+		ScreenSaver,
+		PrevLetter,
+		NextLetter,
+		Custom1,
+		Custom2,
+		Custom3,
+		Custom4,
+		Custom5,
+		Custom6,
 		LAST_COMMAND,
 
 		//
@@ -149,6 +159,11 @@ public:
 	FeInputMap();
 
 	Command map_input( const sf::Event &, const sf::IntRect &mc_rect, const int joy_thresh );
+
+	//
+	// Test if any of the inputs mapped to command c are pressed
+	//
+	bool get_current_state( FeInputMap::Command c, int joy_thresh ) const;
 
 	void get_mappings( std::vector< FeMapping > &mappings ) const;
 	void set_mapping( const FeMapping &mapping );

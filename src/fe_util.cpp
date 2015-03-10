@@ -1,7 +1,7 @@
 /*
  *
  *  Attract-Mode frontend
- *  Copyright (C) 2013 Andrew Mickelson
+ *  Copyright (C) 2013-15 Andrew Mickelson
  *
  *  This file is part of Attract-Mode.
  *
@@ -22,13 +22,15 @@
 
 #include "fe_util.hpp"
 #include "fe_base.hpp"
+#include "fe_input.hpp"
 #include <iostream>
+#include <iomanip>
 #include <fstream>
 #include <sstream>
 #include <stdlib.h>
 #include <algorithm>
 #include <cstdlib>
-#include <cstring>
+#include <cctype>
 
 #include <unistd.h>
 #include <sys/stat.h>
@@ -46,6 +48,11 @@
 #include <sys/wait.h>
 #include <pwd.h>
 #include <signal.h>
+#include <SFML/System/Sleep.hpp>
+#endif
+
+#ifdef SFML_SYSTEM_MACOS
+#include "fe_util_osx.hpp"
 #endif
 
 namespace {
@@ -93,7 +100,7 @@ bool tail_compare(
 {
 	unsigned int extlen = extension.size();
 
-	if ( extlen >= filename.size() )
+	if ( extlen > filename.size() )
 		return false;
 
 	for ( unsigned int i=0; i < extlen; i++ )
@@ -106,9 +113,50 @@ bool tail_compare(
 	return true;
 }
 
+int icompare(
+			const std::string &one,
+			const std::string &two )
+{
+	unsigned int one_len = one.size();
+
+	if ( one_len != two.size() )
+		return ( one_len - two.size() );
+
+	for ( unsigned int i=0; i < one_len; i++ )
+	{
+		if ( std::tolower( one[i] ) != std::tolower( two[i] ) )
+			return ( one[i] - two[i] );
+	}
+
+	return 0;
+}
+
 bool file_exists( const std::string &file )
 {
 	return (( access( file.c_str(), 0 ) == -1 ) ? false : true);
+}
+
+bool directory_exists( const std::string &file )
+{
+	if (( file.empty() )
+			|| ( file[ file.size()-1 ] == '/' )
+			|| ( file[ file.size()-1 ] == '\\' ))
+		return file_exists( file );
+	else
+		return file_exists( file + '/' );
+}
+
+bool is_relative_path( const std::string &name )
+{
+#ifdef SFML_SYSTEM_WINDOWS
+	if (( name.size() > 2 )
+			&& ( isalpha( name[0] ) )
+			&& ( name[1] == ':' )
+			&& (( name[2] == '\\' ) || ( name[2] == '/' )))
+		return false;
+#endif
+
+	return (( !name.empty() ) && ( name[0] != '/' ));
 }
 
 std::string clean_path( const std::string &path, bool require_trailing_slash )
@@ -155,30 +203,56 @@ std::string clean_path( const std::string &path, bool require_trailing_slash )
 	return retval;
 }
 
+std::string absolute_path( const std::string &path )
+{
+#ifdef SFML_SYSTEM_WINDOWS
+
+	const int BUFF_SIZE = 512;
+	char buff[ BUFF_SIZE + 1 ];
+	buff[BUFF_SIZE] = 0;
+
+	if ( GetFullPathNameA( path.c_str(), BUFF_SIZE, buff, NULL ))
+		return std::string( buff );
+#else
+	char buff[PATH_MAX+1];
+
+	if ( realpath( path.c_str(), buff ) )
+	{
+		std::string retval = buff;
+		if (( retval.size() > 0 ) && ( retval[ retval.size()-1 ] != '/' ))
+			retval += "/";
+
+		return retval;
+	}
+#endif // SFML_SYSTEM_WINDOWS
+
+	return path;
+}
+
 bool search_for_file( const std::string &base_path,
 						const std::string &base_name,
 						const char **valid_exts,
 						std::string &result )
 {
 	std::vector<std::string> result_list;
-	std::vector<std::string> bn;
-	bn.push_back( base_name );
+	std::vector<std::string> ignore_list;
+
 	if ( get_filename_from_base(
-					result_list, base_path, bn, valid_exts, false )  )
+		result_list, ignore_list, base_path, base_name, valid_exts )  )
 	{
 		result = result_list.front();
 		return true;
 	}
 
 	std::vector<std::string> subs;
-	get_subdirectories( subs, base_path, true );
+	get_subdirectories( subs, base_path );
 
 	std::vector<std::string>::iterator itr;
 	for ( itr = subs.begin(); itr != subs.end(); ++itr )
 	{
 
 		if ( search_for_file(
-				base_path + (*itr),
+				base_path + (*itr) + "/",
 				base_name,
 				valid_exts,
 				result ) )
@@ -192,171 +266,221 @@ bool search_for_file( const std::string &base_path,
 
 bool get_subdirectories(
 			std::vector<std::string> &list,
-			const std::string &path, bool append_slash )
+			const std::string &path )
 {
+#ifdef SFML_SYSTEM_WINDOWS
+	std::string temp = path + "*";
+
+	struct _finddata_t t;
+	intptr_t srch = _findfirst( temp.c_str(), &t );
+
+	if  ( srch < 0 )
+		return false;
+
+	do
+	{
+		std::string what;
+		str_from_c( what, t.name );
+
+		if ( ( what.compare( "." ) == 0 ) || ( what.compare( ".." ) == 0 ) )
+			continue;
+
+		if ( t.attrib & _A_SUBDIR )
+			list.push_back( what );
+
+	} while ( _findnext( srch, &t ) == 0 );
+	_findclose( srch );
+
+#else
+
 	DIR *dir;
 	struct dirent *ent;
-	if ( (dir = opendir( path.c_str() )) != NULL )
+	if ( (dir = opendir( path.c_str() )) == NULL )
+		return false;
+
+	while ((ent = readdir( dir )) != NULL )
 	{
-		while ((ent = readdir( dir )) != NULL )
-		{
-			if (( strcmp( ent->d_name, "." ) == 0 )
-					|| ( strcmp( ent->d_name, ".." ) == 0 ))
-				continue;
+		std::string name;
+		str_from_c( name, ent->d_name );
 
-			std::string name;
-			str_from_c( name, ent->d_name );
+		if (( name.compare( "." ) == 0 )
+				|| ( name.compare( ".." ) == 0 ))
+			continue;
 
-			struct stat st;
-			stat( (path + "/" + name).c_str(), &st );
+		struct stat st;
+		stat( (path + name).c_str(), &st );
 
-			if ( S_ISDIR( st.st_mode ) )
-				list.push_back( append_slash ? name + '/' : name );
-		}
-		closedir( dir );
-		return true;
+		if ( S_ISDIR( st.st_mode ) )
+			list.push_back( name );
 	}
-	return false;
+	closedir( dir );
+
+#endif
+
+	return true;
 }
 
 bool get_basename_from_extension(
 			std::vector<std::string> &list,
 			const std::string &path,
-			const std::vector <std::string> &extensions,
+			const std::string &extension,
 			bool strip_extension )
 {
+#ifdef SFML_SYSTEM_WINDOWS
+	std::string temp = path + "*" + extension;
+
+	struct _finddata_t t;
+	intptr_t srch = _findfirst( temp.c_str(), &t );
+
+	if  ( srch < 0 )
+		return false;
+
+	do
+	{
+		std::string what;
+		str_from_c( what, t.name );
+
+		// I don't know why but the search filespec we are using
+		// "path/*.ext"seems to also match "path/*.ext*"... so we
+		// do the tail comparison below on purpose to catch this...
+#else
 	DIR *dir;
 	struct dirent *ent;
 
-	if ( (dir = opendir( path.c_str() )) != NULL )
+	if ( (dir = opendir( path.c_str() )) == NULL )
+		return false;
+
+	while ((ent = readdir( dir )) != NULL )
 	{
-		while ((ent = readdir( dir )) != NULL )
+		std::string what;
+		str_from_c( what, ent->d_name );
+#endif
+
+		if ( ( what.compare( "." ) == 0 ) || ( what.compare( ".." ) == 0 ) )
+			continue;
+
+		if ( tail_compare( what, extension ) )
 		{
-			std::string what;
-			str_from_c( what, ent->d_name );
-
-			if ( ( what.compare( "." ) == 0 ) || ( what.compare( ".." ) == 0 ) )
-				continue;
-
-			std::vector<std::string>::const_iterator itr;
-			for ( itr = extensions.begin(); itr != extensions.end(); ++ itr )
+			if ( strip_extension && ( what.size() > extension.size() ))
 			{
-				if ( tail_compare( what, *itr ) )
-				{
-					if ( strip_extension && ( what.size() > (*itr).size() ))
-					{
-						std::string bname = what.substr( 0,
-							what.size() - (*itr).size() );
+				std::string bname = what.substr( 0,
+					what.size() - extension.size() );
 
-						// don't add duplicates if we are stripping extension
-						// example: if there is both foo.zip and foo.7z
-						//
-						if ( list.empty() || ( bname.compare( list.back() ) != 0 ))
-							list.push_back( bname );
-					}
-					else
-						list.push_back( what );
-				}
+				// don't add duplicates if we are stripping extension
+				// example: if there is both foo.zip and foo.7z
+				//
+				if ( list.empty() || ( bname.compare( list.back() ) != 0 ))
+					list.push_back( bname );
 			}
+			else
+				list.push_back( what );
+
 		}
-		closedir( dir );
+#ifdef SFML_SYSTEM_WINDOWS
+	} while ( _findnext( srch, &t ) == 0 );
+	_findclose( srch );
+#else
 	}
+	closedir( dir );
+#endif
 
 	std::sort( list.begin(), list.end() );
 	return !(list.empty());
 }
 
-bool get_filename_from_base( std::vector<std::string> &list,
-            const std::string &path,
-				const std::vector <std::string> &base_list,
-				const char **filter, bool filter_excludes )
+bool get_filename_from_base(
+	std::vector<std::string> &in_list,
+	std::vector<std::string> &out_list,
+	const std::string &path,
+	const std::string &base_name,
+	const char **filter )
 {
-	if ( base_list.empty() )
+#ifdef SFML_SYSTEM_WINDOWS
+	std::string temp = path + base_name + "*";
+
+	struct _finddata_t t;
+	intptr_t srch = _findfirst( temp.c_str(), &t );
+
+	if  ( srch < 0 )
 		return false;
 
-#ifdef SFML_SYSTEM_WINDOWS
-	for ( std::vector<std::string>::const_iterator itr = base_list.begin();
-			itr < base_list.end(); ++itr )
+	do
 	{
-		std::string temp = path + (*itr) + "*";
-		struct _finddata_t t;
-		intptr_t srch = _findfirst( temp.c_str(), &t );
+		std::string what;
+		str_from_c( what, t.name );
 
-		if  ( srch < 0 )
-			continue;
-		do
+		if (( what.compare( "." ) != 0 )
+				&& ( what.compare( ".." ) != 0 ))
 		{
-			std::string what;
-			str_from_c( what, t.name );
 #else
 
 	DIR *dir;
 	struct dirent *ent;
 
-	if ( (dir = opendir( path.c_str() )) != NULL )
+	if ( (dir = opendir( path.c_str() )) == NULL )
+		return false;
+
+	while ((ent = readdir( dir )) != NULL )
 	{
-		for ( std::vector<std::string>::const_iterator itr = base_list.begin();
-				itr < base_list.end(); ++itr )
+		std::string what;
+		str_from_c( what, ent->d_name );
+
+		if (( what.compare( "." ) != 0 )
+				&& ( what.compare( ".." ) != 0 )
+				&& ( what.size() >= base_name.size() )
+				&& ( what.compare( 0, base_name.size(), base_name ) == 0 ))
 		{
-			rewinddir( dir );
-			while ((ent = readdir( dir )) != NULL )
+#endif // SFML_SYSTEM_WINDOWS
+			if ( filter )
 			{
-				std::string what;
-				str_from_c( what, ent->d_name );
-
-				if (( what.compare( "." ) == 0 ) || ( what.compare( ".." ) == 0 ))
-					continue;
-
-				if (( what.size() >= (*itr).size() ) &&
-					( what.compare( 0, (*itr).size(), (*itr) ) == 0 ))
+				bool add=false;
+				int i=0;
+				while ( filter[i] != NULL )
 				{
-#endif // SFML_SYSTEM_WINDOWS
-
-					bool add=true;
-					if ( filter )
+					if ( tail_compare( what, filter[i] ) )
 					{
-						if ( !filter_excludes )
-							add=false;
-						int i=0;
-						while ( filter[i] != NULL )
-						{
-							if ( tail_compare( what, filter[i] ) )
-							{
-								if ( !filter_excludes )
-									add=true;
-								else
-									add=false;
-								break;
-							}
-							i++;
-						}
+						add=true;
+						break;
 					}
-
-					if ( add )
-						list.push_back( path + what );
-
-#ifdef SFML_SYSTEM_WINDOWS
-		} while ( _findnext( srch, &t ) == 0 );
-		_findclose( srch );
-	}
-#else
+					i++;
 				}
-			}
-		}
-		closedir( dir );
-	}
 
+				if ( add )
+					in_list.push_back( path + what );
+				else
+					out_list.push_back( path + what );
+			}
+			else
+				in_list.push_back( path + what );
+#ifdef SFML_SYSTEM_WINDOWS
+		}
+	} while ( _findnext( srch, &t ) == 0 );
+	_findclose( srch );
+#else
+		}
+	}
+	closedir( dir );
 #endif // SFML_SYSTEM_WINDOWS
 
-	return !(list.empty());
+	return !(in_list.empty());
 }
-
 
 bool token_helper( const std::string &from,
 	size_t &pos, std::string &token, const char *sep )
 {
 	bool retval( false ), in_quotes( false ), escaped( false );
 	size_t end;
+
+	//
+	// Skip leading whitespace
+	//
+	pos = from.find_first_not_of( FE_WHITESPACE, pos );
+	if ( pos == std::string::npos )
+	{
+		token.clear();
+		pos = from.size();
+		return false;
+	}
 
 	if ( from[pos] == '"' )
 	{
@@ -397,8 +521,9 @@ bool token_helper( const std::string &from,
 
 	// clean out leading and trailing whitespace from token
 	//
-	size_t f= from.find_first_not_of( FE_WHITESPACE, old_pos );
-	if ( f == std::string::npos )
+	size_t f = from.find_first_not_of( FE_WHITESPACE, old_pos );
+
+	if (( f == std::string::npos ) || ( f == end ))
 	{
 		token.clear();
 	}
@@ -469,14 +594,14 @@ void delete_file( const std::string &file )
 
 bool confirm_directory( const std::string &base, const std::string &sub )
 {
-	if ( !file_exists( base ) )
+	if ( !directory_exists( base ) )
 #ifdef SFML_SYSTEM_WINDOWS
 		mkdir( base.c_str() );
 #else
 		mkdir( base.c_str(), S_IRWXU | S_IRWXG | S_IROTH | S_IXOTH  );
 #endif // SFML_SYSTEM_WINDOWS
 
-	if ( (!sub.empty()) && (!file_exists( base + sub )) )
+	if ( (!sub.empty()) && (!directory_exists( base + sub )) )
 #ifdef SFML_SYSTEM_WINDOWS
 		mkdir( (base + sub).c_str() );
 #else
@@ -492,6 +617,14 @@ std::string as_str( int i )
 	ss << i;
 	return ss.str();
 }
+
+std::string as_str( float f, int decimals )
+{
+	std::ostringstream ss;
+	ss << std::setprecision( decimals ) << std::fixed << f;
+	return ss.str();
+}
+
 
 int as_int( const std::string &s )
 {
@@ -532,8 +665,12 @@ bool run_program( const std::string &prog,
 	const::std::string &args,
 	output_callback_fn callback,
 	void *opaque,
-	bool block )
+	bool block,
+	const std::string &exit_hotkey,
+	int joy_thresh )
 {
+	const int POLL_FOR_EXIT_MS=100;
+
 	std::string comstr( prog );
 	comstr += " ";
 	comstr += args;
@@ -597,48 +734,39 @@ bool run_program( const std::string &prog,
 	delete [] cmdline;
 
 	if ( ret == false )
+	{
+		std::cerr << "Error executing command: '" << comstr << "'" << std::endl;
 		return false;
+	}
 
 	if (( NULL != callback ) && ( block ))
 	{
-		int fd = _open_osfhandle( (intptr_t)child_output_read, _O_RDONLY );
-		if ( fd == -1 )
+		char buffer[ 1024 ];
+		buffer[1023]=0;
+		DWORD bytes_read;
+		while ( ReadFile( child_output_read, buffer, 1023, &bytes_read, NULL ) != 0 )
 		{
-			std::cerr << "Error opening osf handle: " << comstr << std::endl;
-		}
-		else
-		{
-			FILE *fs = _fdopen( fd, "r" );
-			if ( fs == NULL )
+			buffer[bytes_read]=0;
+			if ( callback( buffer, opaque ) == false )
 			{
-				std::cerr << "Error opening output from: "
-					<< comstr << std::endl;
+				TerminateProcess( pi.hProcess, 0 );
+				block=false;
+				break;
 			}
-			else
-			{
-				char buffer[ 1024 ];
-				while ( fgets( buffer, 1024, fs ) != NULL )
-				{
-					if ( callback( buffer, opaque ) == false )
-					{
-						TerminateProcess( pi.hProcess, 0 );
-						block=false;
-						break;
-					}
-				}
-
-				fclose( fs );
-			}
-			_close( fd ); // _close will close the underlying handle as well,
-							// no need to call CloseHandle()
 		}
 	}
+
+	if ( child_output_read )
+		CloseHandle( child_output_read );
+
+	DWORD timeout = exit_hotkey.empty() ? INFINITE : POLL_FOR_EXIT_MS;
+	FeInputSource exit_is( exit_hotkey );
 
 	bool keep_wait=block;
 	while (keep_wait)
 	{
 		switch (MsgWaitForMultipleObjects(1, &pi.hProcess,
-						FALSE, INFINITE, QS_ALLINPUT))
+						FALSE, timeout, QS_ALLINPUT))
 		{
 		case WAIT_OBJECT_0:
 			keep_wait=false;
@@ -650,6 +778,16 @@ bool run_program( const std::string &prog,
 			{
 				TranslateMessage(&msg);
 				DispatchMessage(&msg);
+			}
+			break;
+
+		case WAIT_TIMEOUT:
+			// We should only ever get here if an exit_hotkey was provided
+			//
+			if ( exit_is.get_current_state( joy_thresh ) )
+			{
+				TerminateProcess( pi.hProcess, 0 );
+				keep_wait=false;
 			}
 			break;
 
@@ -704,6 +842,12 @@ bool run_program( const std::string &prog,
 			dup2( mypipe[1], fileno(stdout) );
 			close( mypipe[1] );
 		}
+
+		{
+			size_t pos = prog.find_last_of( "/" );
+			if ( pos != std::string::npos )
+				chdir( prog.substr( 0, pos ).c_str() );
+		}
 		execvp( prog.c_str(), arg_list );
 
 		// execvp doesn't return unless there is an error.
@@ -737,9 +881,24 @@ bool run_program( const std::string &prog,
 		if ( block )
 		{
 			int status;
+			int opt = exit_hotkey.empty() ? 0 : WNOHANG; // option for waitpid.  0= wait for process to complete, WNOHANG=return right away
+			FeInputSource exit_is( exit_hotkey );
+
 			do
 			{
-				waitpid( pid, &status, 0 ); // wait for child process to complete
+				if ( waitpid( pid, &status, opt ) == 0 )
+				{
+					// waitpid should only return 0 if WNOHANG is used and the child is still running, so we
+					// should only ever get here if there is an exit_hotkey provided
+					//
+					if ( exit_is.get_current_state( joy_thresh ) )
+					{
+						kill( pid, SIGTERM );
+						break; // leave do/while loop
+					}
+
+					sf::sleep( sf::milliseconds( POLL_FOR_EXIT_MS ) );
+				}
 			} while ( !WIFEXITED( status ) && !WIFSIGNALED( status ) );
 		}
 	}
@@ -747,3 +906,53 @@ bool run_program( const std::string &prog,
 	return true;
 }
 
+std::string name_with_brackets_stripped( const std::string &name )
+{
+	size_t pos = name.find_first_of( "([" );
+
+	if ( pos == std::string::npos )
+		return name;
+
+	return name.substr( 0,
+			name.find_last_of( FE_WHITESPACE, pos ) );
+}
+
+
+std::basic_string<sf::Uint32> clipboard_get_content()
+{
+	std::basic_string<sf::Uint32> retval;
+
+#ifdef SFML_SYSTEM_MACOS
+	retval = osx_clipboard_get_content();
+#endif
+
+#ifdef SFML_SYSTEM_WINDOWS
+	if (!IsClipboardFormatAvailable(CF_UNICODETEXT))
+		return retval;
+
+	if (!OpenClipboard(NULL))
+		return retval;
+
+	HGLOBAL hglob = GetClipboardData(CF_UNICODETEXT);
+	if (hglob != NULL)
+	{
+		LPWSTR lptstr = (LPWSTR)GlobalLock(hglob);
+		if (lptstr != NULL)
+		{
+			std::wstring str = lptstr;
+
+			for ( std::wstring::iterator itr=str.begin(); itr!=str.end(); ++itr )
+			{
+				if ( *itr >= 32 ) // strip control characters such as line feeds, etc
+					retval += *itr;
+			}
+
+			GlobalUnlock(hglob);
+		}
+	}
+
+	CloseClipboard();
+#endif // if WINDOWS
+
+	return retval;
+}

@@ -1,7 +1,7 @@
 /*
  *
  *  Attract-Mode frontend
- *  Copyright (C) 2013 Andrew Mickelson
+ *  Copyright (C) 2013-15 Andrew Mickelson
  *
  *  This file is part of Attract-Mode.
  *
@@ -116,13 +116,17 @@ bool FeMapComp::operator()(const char *lhs, const char *rhs) const
 // Mame XML Parser
 //
 FeMameXMLParser::FeMameXMLParser(
-		std::list <FeRomInfo> &romlist,
+		FeRomInfoListType &romlist,
 		UiUpdate u,
-		void *d )
+		void *d,
+		bool full )
 	: FeXMLParser( u, d ),
 	m_romlist( romlist ),
 	m_count( 0 ),
-	m_displays( 0 )
+	m_displays( 0 ),
+	m_chd( false ),
+	m_mechanical( false ),
+	m_full( full )
 {
 }
 
@@ -138,18 +142,32 @@ void FeMameXMLParser::start_element(
 		{
 			if ( strcmp( attribute[i], "name" ) == 0 )
 			{
-				std::map<const char *, std::list<FeRomInfo>::iterator, FeMapComp>::iterator itr;
+				std::map<const char *, FeRomInfoListType::iterator, FeMapComp>::iterator itr;
 				itr = m_map.find( attribute[i+1] );
 				if ( itr != m_map.end() )
 				{
 					m_itr = (*itr).second;
 					m_collect_data=true;
 					m_displays=0;
+					m_chd=false;
+					m_mechanical=false;
 					m_keep_rom=true;
 				}
 				else
 				{
-					m_collect_data=false;
+					if ( m_full )
+					{
+						m_romlist.push_back( FeRomInfo( attribute[i+1] ) );
+						m_itr = m_romlist.end();
+						m_itr--;
+						m_collect_data=true;
+						m_displays=0;
+						m_chd=false;
+						m_mechanical=false;
+						m_keep_rom=true;
+					}
+					else
+						m_collect_data=false;
 				}
 
 				break;
@@ -168,6 +186,13 @@ void FeMameXMLParser::start_element(
 				}
 				else if ( strcmp( attribute[i], "cloneof" ) == 0 )
 					(*m_itr).set_info( FeRomInfo::Cloneof, attribute[i+1] );
+				else if ( strcmp( attribute[i], "romof" ) == 0 )
+					(*m_itr).set_info( FeRomInfo::AltRomname, attribute[i+1] );
+				else if (( strcmp( attribute[i], "ismechanical" ) == 0 )
+					&& ( strcmp( attribute[i+1], "yes" ) == 0 ))
+				{
+					m_mechanical = true;
+				}
 			}
 		}
 	}
@@ -255,6 +280,10 @@ void FeMameXMLParser::start_element(
 			}
 			(*m_itr).set_info( FeRomInfo::Control, old_type + type );
 		}
+		else if ( strcmp( element, "disk" ) == 0 )
+		{
+			m_chd=true;
+		}
 		else if (( strcmp( element, "description" ) == 0 )
 				|| ( strcmp( element, "year" ) == 0 )
 				|| ( strcmp( element, "manufacturer" ) == 0 ))
@@ -275,8 +304,27 @@ void FeMameXMLParser::end_element( const char *element )
 
 			if ( !m_keep_rom )
 				m_discarded.push_back( m_itr );
+			else
+			{
+				//
+				// Construct the extra info now
+				//
+				std::string extra;
+				if ( m_chd )
+					extra += "chd";
 
-			(*m_itr).set_info( FeRomInfo::DisplayCount, as_str( m_displays ) );
+				if ( m_mechanical )
+				{
+					if ( !extra.empty() )
+						extra += ",";
+
+					extra += "mechanical";
+				}
+
+				(*m_itr).set_info( FeRomInfo::Extra, extra );
+				(*m_itr).set_info( FeRomInfo::DisplayCount, as_str( m_displays ) );
+			}
+
 			m_count++;
 
 			int percent = m_count * 100 / m_romlist.size();
@@ -312,51 +360,23 @@ void FeMameXMLParser::end_element( const char *element )
 bool FeMameXMLParser::parse( const std::string &prog )
 {
 	std::string base_args = "-listxml";
-	std::list<FeRomInfo>::iterator itr;
+	FeRomInfoListType::iterator itr;
 	m_percent=m_count=0;
 
-	if ( m_romlist.size() < 500 )
+	//
+	// run "mame -listxml" and find each rom.
+	//
+	m_map.clear();
+	for ( FeRomInfoListType::iterator itr=m_romlist.begin();
+			itr != m_romlist.end(); ++itr )
+		m_map[ (*itr).get_info( FeRomInfo::Romname ).c_str() ] = itr;
+
+	std::cout << "    ";
+
+	if ( parse_internal( prog, base_args ) == false )
 	{
-		//
-		// Small List Strategy: run "mame -listxml <romname>" for each rom.
-		//
-		std::cout << "    ";
-		for ( itr = m_romlist.begin(); itr != m_romlist.end(); ++itr )
-		{
-			std::string args = base_args;
-			args += " ";
-			args += (*itr).get_info( FeRomInfo::Romname );
-
-			m_map.clear();
-			m_map[ (*itr).get_info( FeRomInfo::Romname ).c_str() ] = itr;
-
-			if ( parse_internal( prog, args ) == false )
-			{
-				std::cout << "No XML output found, command: " << prog << " "
-						<< args << std::endl;
-			}
-
-			if ( get_continue_parse() == false )
-				break;
-		}
-	}
-	else
-	{
-		//
-		// Large List Strategy: run "mame -listxml" and find each rom.
-		//
-		m_map.clear();
-		for ( std::list<FeRomInfo>::iterator itr=m_romlist.begin();
-				itr != m_romlist.end(); ++itr )
-			m_map[ (*itr).get_info( FeRomInfo::Romname ).c_str() ] = itr;
-
-		std::cout << "    ";
-
-		if ( parse_internal( prog, base_args ) == false )
-		{
-			std::cout << "No XML output found, command: " << prog << " "
-						<< base_args << std::endl;
-		}
+		std::cout << "No XML output found, command: " << prog << " "
+					<< base_args << std::endl;
 	}
 
 	std::cout << std::endl;
@@ -365,7 +385,7 @@ bool FeMameXMLParser::parse( const std::string &prog )
 	{
 		std::cout << "Discarded " << m_discarded.size()
 				<< " entries based on xml info: ";
-		std::vector<std::list<FeRomInfo>::iterator>::iterator itr;
+		std::vector<FeRomInfoListType::iterator>::iterator itr;
 		for ( itr = m_discarded.begin(); itr != m_discarded.end(); ++itr )
 		{
 			std::cout << (*(*itr)).get_info( FeRomInfo::Romname ) << " ";
@@ -381,10 +401,11 @@ bool FeMameXMLParser::parse( const std::string &prog )
 // Mess XML Parser
 //
 FeMessXMLParser::FeMessXMLParser(
-	std::list <FeRomInfo> &romlist,
+	FeRomInfoListType &romlist,
 	UiUpdate u,
-	void *d )
-	: FeXMLParser( u, d ), m_romlist( romlist )
+	void *d,
+	bool full )
+	: FeXMLParser( u, d ), m_romlist( romlist ), m_full( full )
 {
 }
 
@@ -397,6 +418,8 @@ void FeMessXMLParser::clear_parse_state()
 	m_man.clear();
 	m_fuzzydesc.clear();
 	m_cloneof.clear();
+	m_altname.clear();
+	m_alttitle.clear();
 }
 
 void FeMessXMLParser::start_element(
@@ -410,7 +433,7 @@ void FeMessXMLParser::start_element(
 		{
 			if ( strcmp( attribute[i], "name" ) == 0 )
 			{
-				m_name = attribute[i+1];
+				m_altname = m_name = attribute[i+1];
 
 				for ( m_itr=m_romlist.begin(); m_itr!=m_romlist.end(); ++m_itr )
 				{
@@ -420,6 +443,14 @@ void FeMessXMLParser::start_element(
 						m_keep_rom=true;
 						break;
 					}
+				}
+
+				if ( !m_keep_rom && m_full )
+				{
+					m_romlist.push_back( FeRomInfo( attribute[i+1] ) );
+					m_itr = m_romlist.end();
+					m_itr--;
+					m_keep_rom=true;
 				}
 			}
 			else if ( strcmp( attribute[i], "cloneof" ) == 0 )
@@ -433,6 +464,23 @@ void FeMessXMLParser::start_element(
 			|| ( strcmp( element, "publisher" ) == 0 ))
 	{
 		m_element_open=true;
+	}
+	else if ( strcmp( element, "info" ) == 0 )
+	{
+		std::string value;
+		bool found=false;
+
+		for ( int i=0; attribute[i]; i+=2 )
+		{
+			if (( strcmp( attribute[i], "name" ) == 0 )
+						&& ( strcmp( attribute[i+1], "alt_title" ) == 0 ))
+				found = true;
+			else if ( strcmp( attribute[i], "value" ) == 0 )
+				value = attribute[i+1];
+		}
+
+		if ( found )
+			m_alttitle.swap( value );
 	}
 }
 
@@ -454,7 +502,7 @@ void FeMessXMLParser::end_element( const char *element )
 				{
 					set_info_values( *m_itr );
 				}
-				else if ( (*m_itr).get_info( FeRomInfo::BuildAltName ).empty() )
+				else if ( (*m_itr).get_info( FeRomInfo::AltRomname ).empty() )
 				{
 					// Try using a "fuzzy" match that ignores brackets.
 					//
@@ -494,7 +542,8 @@ void FeMessXMLParser::set_info_values( FeRomInfo &r )
 	r.set_info( FeRomInfo::Year, m_year );
 	r.set_info( FeRomInfo::Manufacturer, m_man );
 	r.set_info( FeRomInfo::Cloneof, m_cloneof );
-	r.set_info( FeRomInfo::BuildAltName, m_name );
+	r.set_info( FeRomInfo::AltRomname, m_altname );
+	r.set_info( FeRomInfo::AltTitle, m_alttitle );
 }
 
 bool FeMessXMLParser::parse( const std::string &prog,
@@ -502,13 +551,13 @@ bool FeMessXMLParser::parse( const std::string &prog,
 {
 	// First get our machine -listxml settings
 	//
-	std::list<FeRomInfo> temp_list;
+	FeRomInfoListType temp_list;
 	temp_list.push_back( FeRomInfo( system_name ) );
 
 	FeMameXMLParser listxml( temp_list );
 	listxml.parse( prog );
 
-	std::list<FeRomInfo>::iterator itr;
+	FeRomInfoListType::iterator itr;
 	if ( !temp_list.empty() )
 	{
 		const FeRomInfo &ri = temp_list.front();
@@ -544,7 +593,7 @@ bool FeMessXMLParser::parse( const std::string &prog,
 	return retval;
 }
 
-FeHyperSpinXMLParser::FeHyperSpinXMLParser(  std::list<FeRomInfo> & li )
+FeHyperSpinXMLParser::FeHyperSpinXMLParser(  FeRomInfoListType & li )
 	: m_romlist( li ), m_collect_data( false )
 {
 }
@@ -646,5 +695,161 @@ bool FeHyperSpinXMLParser::parse( const std::string &filename )
 	XML_Parse( parser, 0, 0, XML_TRUE );
 	XML_ParserFree( parser );
 
+	return ret_val;
+}
+
+void FeGameDBPlatformParser::start_element(
+			const char *element,
+			const char **attribute )
+{
+	if ( strcmp( element, "name" ) == 0 )
+		m_element_open=true;
+}
+
+void FeGameDBPlatformParser::end_element( const char *element )
+{
+	if ( strcmp( element, "name" ) == 0 )
+	{
+		m_set.insert( m_current_data );
+		m_current_data.clear();
+		m_element_open=false;
+	}
+}
+
+bool FeGameDBPlatformParser::parse( const std::string &data )
+{
+	m_set.clear();
+	m_element_open=m_keep_rom=false;
+	m_continue_parse=true;
+	bool ret_val=true;
+
+	XML_Parser parser = XML_ParserCreate( NULL );
+	XML_SetUserData( parser, (void *)this );
+	XML_SetElementHandler( parser, exp_start_element, exp_end_element );
+	XML_SetCharacterDataHandler( parser, exp_handle_data );
+
+	if ( XML_Parse( parser, data.c_str(),
+			data.size(), XML_FALSE ) == XML_STATUS_ERROR )
+	{
+		std::cout << "Error parsing xml." << std::endl;
+		ret_val = false;
+	}
+
+	// need to pass true to XML Parse on last line
+	XML_Parse( parser, 0, 0, XML_TRUE );
+	XML_ParserFree( parser );
+
+	return ret_val;
+}
+
+FeGameDBParser::FeGameDBParser( FeRomInfo &rom )
+	: m_rom( rom ),
+	m_collect_data( false ),
+	m_exact_match( false )
+{
+}
+
+void FeGameDBParser::start_element(
+			const char *element,
+			const char **attribute )
+{
+	if ( m_collect_data )
+	{
+		if (( strcmp( element, "ReleaseDate" ) == 0 )
+				|| ( strcmp( element, "genre" ) == 0 )
+				|| ( strcmp( element, "Players" ) == 0 )
+				|| ( strcmp( element, "Publisher" ) == 0 ))
+		{
+			m_element_open=true;
+		}
+
+		if ( strcmp( element, "Genres" ) == 0 )
+			m_rom.set_info( FeRomInfo::Category, "" );
+	}
+
+	if ( strcmp( element, "GameTitle" ) == 0 )
+		m_element_open=true;
+}
+
+void FeGameDBParser::end_element( const char *element )
+{
+	if ( m_element_open )
+	{
+		if ( strcmp( element, "GameTitle" ) == 0 )
+		{
+			bool m = ( m_current_data.compare(
+								name_with_brackets_stripped(
+								m_rom.get_info( FeRomInfo::Romname ) ) ) == 0 );
+
+			if ( m )
+				m_exact_match = true;
+
+			if ( m || m_collect_data )
+			{
+				m_rom.set_info( FeRomInfo::Title, m_current_data );
+				m_collect_data = true;
+			}
+		}
+		else if ( m_collect_data )
+		{
+			if ( strcmp( element, "ReleaseDate" ) == 0 )
+			{
+				size_t cut = m_current_data.find_last_of( "/" );
+
+				if ( cut != std::string::npos )
+					m_rom.set_info( FeRomInfo::Year, m_current_data.substr( cut+1 ) );
+				else
+					m_rom.set_info( FeRomInfo::Year, m_current_data );
+			}
+			else if ( strcmp( element, "genre" ) == 0 )
+			{
+				std::string cat = m_rom.get_info( FeRomInfo::Category );
+				if ( cat.size() == 0 )
+					cat = m_current_data;
+				else
+				{
+					cat += " / ";
+					cat += m_current_data;
+				}
+				m_rom.set_info( FeRomInfo::Category, cat );
+			}
+			else if ( strcmp( element, "Players" ) == 0 )
+				m_rom.set_info( FeRomInfo::Players, m_current_data );
+			else if ( strcmp( element, "Publisher" ) == 0 )
+				m_rom.set_info( FeRomInfo::Manufacturer, m_current_data );
+		}
+
+		m_element_open=false;
+		m_current_data.clear();
+	}
+
+	if ( strcmp( element, "Game" ) == 0 )
+		m_collect_data=false;
+}
+
+bool FeGameDBParser::parse( const std::string &data, bool &exact_match )
+{
+	m_exact_match=m_element_open=m_keep_rom=false;
+	m_collect_data= !exact_match;
+	m_continue_parse=true;
+	bool ret_val=true;
+
+	XML_Parser parser = XML_ParserCreate( NULL );
+	XML_SetUserData( parser, (void *)this );
+	XML_SetElementHandler( parser, exp_start_element, exp_end_element );
+	XML_SetCharacterDataHandler( parser, exp_handle_data );
+
+	if ( XML_Parse( parser, data.c_str(),
+			data.size(), XML_FALSE ) == XML_STATUS_ERROR )
+	{
+		std::cout << "Error parsing xml." << std::endl;
+		ret_val = false;
+	}
+
+	// need to pass true to XML Parse on last line
+	XML_Parse( parser, 0, 0, XML_TRUE );
+	XML_ParserFree( parser );
+
+	exact_match = m_exact_match;
 	return ret_val;
 }

@@ -3,14 +3,35 @@
 // Attract-Mode Frontend - Orbit layout
 //
 ///////////////////////////////////////////////////
+//
+// NOTES:
+//
+// - The looping static video is from the rec room website at:
+//   http://recroomhq.com/downloads/2010/04/14/tv-static-freebie.html
+//   It is licensed under the Creative Commons Attribution 3.0 License
+//
+///////////////////////////////////////////////////
 class UserConfig {
-	</ label="Orbit Artwork", help="The artwork to spin into orbit", options="marquee,flyer,wheel" />
+	</ label="Orbit Artwork", help="The artwork to spin into orbit", options="marquee,flyer,wheel", order=1 />
 	orbit_art="marquee";
 
-	</ label="Bloom Effect", help="Enable Bloom Effect (requires shader support)", options="Yes,No" />
+	</ label="Bloom Effect", help="Enable Bloom Effect (requires shader support)", options="Yes,No", order=2 />
 	enable_bloom="Yes";
+
+	</ label="Background", help="The filename of the image or video to display in the background", order=3 />
+	bg_image="";
+
+	</ label="Satellite Count", help="The number of orbiting artworks", options="5,7,9,11,13,15", order=4 />
+	count="5";
+
+	</ label="Spin Time", help="The amount of time it takes to spin to the next selection (in milliseconds)", order=5 />
+	spin_ms="120";
+
+	</ label="Static Effect", help="Enable static effect", options="Yes,No", order=6 />
+	static_effect="Yes";
 }
 
+fe.load_module( "conveyor" );
 local my_config = fe.get_config();
 
 fe.layout.width = 800
@@ -18,85 +39,123 @@ fe.layout.height = 600
 
 const MWIDTH = 280;
 const MHEIGHT = 170;
-const SPIN_MS = 200;
+const SNAPBG_ALPHA = 200;
 
-function get_y( x ) {
-	return ( 200 + sqrt( pow( 270, 2 ) - pow( x - 400, 2 ) ) );
+local num_sats = fe.layout.page_size = my_config["count"].tointeger();
+local progress_correction = 1.0 / ( num_sats * 2 );
+
+local spin_ms = 120;
+try {
+	spin_ms = my_config["spin_ms"].tointeger();
+} catch ( e ) {}
+
+function get_y( x )
+{
+	// 270^2 = 72900
+	return ( 200 + sqrt( 72900 - pow( x - 400, 2 ) ));
 }
 
-function set_bright( x, o ) {
+function set_bright( x, o )
+{
 	o.set_rgb( x, x, x );
 }
 
-local no_shader = fe.add_shader( Shader.Empty );
-local yes_shader;
-if ( my_config["enable_bloom"] == "Yes" )
+//
+// Create a class to contain an orbit artwork
+//
+class Satallite extends ConveyorSlot
 {
-	yes_shader = fe.add_shader( Shader.Fragment, "bloom_shader.frag" );
-	yes_shader.set_texture_param("bgl_RenderedTexture");
+	static x_lookup = [ 145, 147, 150, 165, 200, 250,
+			400, 550, 600, 635, 650, 653, 655 ];
+	static s_lookup = [ 0.1, 0.2, 0.5, 0.6, 0.86, 0.95,
+			1.25, 0.95, 0.86, 0.6, 0.5, 0.2, 0.1 ];
+
+	constructor()
+	{
+		local o = fe.add_artwork( my_config["orbit_art"] );
+		o.preserve_aspect_ratio=true;
+		o.video_flags = Vid.ImagesOnly;
+
+		base.constructor( o );
+	}
+
+	//
+	// Place, scale and set the colour of the artwork based
+	// on the value of "progress" which ranges from 0.0-1.0
+	//
+	function on_progress( progress, var )
+	{
+		local scale;
+		local new_x;
+		progress += progress_correction;
+
+		if ( progress >= 1.0 )
+		{
+			scale = s_lookup[ 12 ];
+			new_x = x_lookup[ 12 ];
+		}
+		else if ( progress < 0 )
+		{
+			scale = s_lookup[ 0 ];
+			new_x = x_lookup[ 0 ];
+		}
+		else
+		{
+			local slice = ( progress * 12.0 ).tointeger();
+			local factor = ( progress - ( slice / 12.0 ) ) * 12.0;
+
+			scale = s_lookup[ slice ]
+				+ (s_lookup[slice+1] - s_lookup[slice]) * factor;
+
+			new_x = x_lookup[ slice ]
+				+ (x_lookup[slice+1] - x_lookup[slice]) * factor;
+		}
+
+		m_obj.width = MWIDTH * scale;
+		m_obj.height = MHEIGHT * scale;
+		m_obj.x = new_x - m_obj.width / 2;
+		m_obj.y = get_y( new_x ) - m_obj.height / 2;
+
+		set_bright( ( scale > 1.0 ) ? 255 : scale * 255, m_obj );
+	}
+}
+
+//
+// Initialize background image if configured
+//
+if ( my_config[ "bg_image" ].len() > 0 )
+	fe.add_image( my_config[ "bg_image" ],
+			0, 0, fe.layout.width, fe.layout.height );
+
+//
+// Initialize the video frame
+//
+local snapbg=null;
+if ( my_config[ "static_effect" ] == "Yes" )
+{
+	snapbg = fe.add_image(
+		"static.mp4",
+		224, 59, 352, 264 );
+
+	snapbg.set_rgb( 150, 150, 150 );
+	snapbg.alpha = SNAPBG_ALPHA;
 }
 else
 {
-	yes_shader = no_shader;
+	local temp = fe.add_text(
+		"",
+		224, 59, 352, 264 );
+	temp.bg_alpha = SNAPBG_ALPHA;
 }
 
-class Marquee {
-	ob=null; 
-	orig_ob=null;
-	base_io=0;
-	xl=0; xm=0; xr=0; 
-	sl=0.0; sm=0.0; sr=0.0;
-
-	constructor( pio, pxl, pxm, pxr, psl, psm, psr ) {
-		xl=pxl; xm=pxm; xr=pxr; sl=psl; sm=psm; sr=psr;
-		orig_ob = ob = fe.add_artwork( my_config["orbit_art"] );
-		ob.preserve_aspect_ratio=true;
-		ob.movie_enabled = false;
-		ob.index_offset = base_io = pio;
-		reset();
-	}
-
-	function move_left( p ) {
-		local scale = ( sm - ( sm - sl ) * p );
-		local nx = xm - ( xm - xl ) * p;
-
-		ob.width = MWIDTH * scale;
-		ob.height = MHEIGHT * scale;
-		ob.x = nx - ob.width / 2;
-		ob.y = get_y( nx ) - ob.height / 2;
-		set_bright( scale * 255, ob );
-	}
-
-	function move_right( p ) {
-		local scale = ( sm - ( sm - sr ) * p );
-		local nx = xm + ( xr - xm ) * p;
-
-		ob.width = MWIDTH * scale;
-		ob.height = MHEIGHT * scale;
-		ob.x = nx - ob.width / 2;
-		ob.y = get_y( nx ) - ob.height / 2;
-		set_bright( scale * 255, ob );
-	}
-
-	function reset() {
-		ob.width = MWIDTH * sm;
-		ob.height = MHEIGHT * sm;
-		ob.x = xm - ob.width / 2;
-		ob.y = get_y( xm ) - ob.height / 2;
-		set_bright( sm * 255, ob );
-	}
-	function swap_art( o ) {
-		local temp = o.ob;
-		o.ob = ob;
-		ob = temp;
-	}
-}
-
-fe.add_artwork( "snap", 224, 59, 352, 264 );
+local snap = fe.add_artwork( "snap", 224, 59, 352, 264 );
+snap.trigger = Transition.EndNavigation;
 local frame = fe.add_image( "frame.png", 216, 51, 368, 278 );
-frame.shader = yes_shader;
 
-local l = fe.add_text( "[ListFilterName] [[ListEntry]/[ListSize]]", 400, 580, 400, 20 );
+//
+// Initialize misc text
+//
+local l = fe.add_text( "[FilterName] [[ListEntry]/[ListSize]]", 400, 580, 400, 20 );
 l.set_rgb( 180, 180, 70 );
 l.align = Align.Right;
 
@@ -104,103 +163,112 @@ local l = fe.add_text( "[Category]", 0, 580, 400, 20 );
 l.set_rgb( 180, 180, 70 );
 l.align = Align.Left;
 
-local marquees = [
-	Marquee( -2, 200, 150, 145, 0.7, 0.4, 0.1 ), 
-	Marquee( -1, 400, 200, 150, 1.0, 0.7, 0.4 ), 
-	Marquee(  2, 655, 650, 600, 0.1, 0.4, 0.7 )
-];
-
-// Delayed creation of these two so that they are drawn over top of the others
-// (they will be later in the draw order)
 //
-marquees.insert( 2, Marquee(  1, 650, 600, 400, 0.4, 0.7, 1.0 ) );
+// Initialize the orbit artworks with selection at the top
+// of the draw order
+//
+local sats = [];
+for ( local i=0; i < num_sats  / 2; i++ )
+	sats.append( Satallite() );
 
-// This is the marquee for the current selection
-marquees.insert( 2, Marquee(  0, 600, 400, 200, 0.7, 1.0, 0.7 ) );
-marquees[2].ob.shader = yes_shader;
+for ( local i=0; i < ( num_sats + 1 ) / 2; i++ )
+	sats.insert( num_sats / 2, Satallite() );
 
-l = fe.add_text( "[ListTitle]", 0, 0, 800, 55 );
+//
+// Initialize a conveyor to control the artworks
+//
+local orbital = Conveyor();
+orbital.transition_ms = spin_ms;
+orbital.transition_swap_point = 1.0;
+orbital.set_slots( sats );
+
+//
+// Title text
+//
+l = fe.add_text( "[DisplayName]", 0, 0, 800, 55 );
 l.set_rgb( 180, 180, 70 ); 
 l.style = Style.Bold;
-l.shader = yes_shader;
 
-l = fe.add_text( "[Title], [Manufacturer] [Year]", 0, 550, 800, 30 );
-l.set_rgb( 255, 255, 255 );
+//
+// Set the shader effect if configured
+//
+if ( my_config["enable_bloom"] == "Yes" )
+{
+	local sh = fe.add_shader( Shader.Fragment, "bloom_shader.frag" );
+	sh.set_texture_param("bgl_RenderedTexture"); 
 
+	frame.shader = sh;
+	sats[ sats.len() / 2 ].m_obj.shader = sh;
+	l.shader = sh;
+}
+
+//
+// Name text w/ black outline
+//
+fe.add_text( "[Title], [Manufacturer] [Year]", 0, 550, 800, 30 )
+	.set_rgb( 0, 0, 0 );
+
+fe.add_text( "[Title], [Manufacturer] [Year]", 2, 550, 800, 30 )
+	.set_rgb( 0, 0, 0 );
+
+fe.add_text( "[Title], [Manufacturer] [Year]", 1, 550, 800, 30 )
+	.set_rgb( 0, 0, 0 );
+
+fe.add_text( "[Title], [Manufacturer] [Year]", 1, 552, 800, 30 )
+	.set_rgb( 0, 0, 0 );
+
+fe.add_text( "[Title], [Manufacturer] [Year]", 1, 551, 800, 30 )
+	.set_rgb( 255, 255, 255 );
+
+//
+// Have the frame around the snap/video slowly cycles from white to
+// black and back
+//
+fe.add_ticks_callback( "orbit_tick" );
+function orbit_tick( ttime )
+{
+	local block = ttime / 30000;
+
+	if ( block % 2 )
+		set_bright( ( ( ttime % 30000 ) / 30000.0 ) * 255, frame );
+	else
+		set_bright( 255 - ( ( ttime % 30000 ) / 30000.0 ) * 255, frame );
+}
+
+//
+// Add fade effect when moving to/from the layout or a game
+//
 fe.add_transition_callback( "orbit_transition" );
-
-local last_move=0;
-
-function orbit_transition( ttype, var, ttime ) {
+function orbit_transition( ttype, var, ttime )
+{
 	switch ( ttype )
 	{
 	case Transition.ToNewSelection:
-		if ( ttime < SPIN_MS )
+		if ( snapbg )
 		{
-			marquees[2].ob.shader = no_shader;
-			local moves = abs( var );
-			local jump_adjust = 0;
-			if ( moves > marquees.len() )
+			if ( snap.file_name.len() > 0 )
 			{
-				jump_adjust = moves - marquees.len();
-				moves = marquees.len();
-			}
-
-			local move_duration = SPIN_MS / moves;
-			local curr_move = ttime / move_duration;
-
-			local change_index=false;
-			if ( curr_move > last_move )
-			{
-				last_move=curr_move;
-				change_index=true;
-			}
-
-			local progress = ( ttime % move_duration ).tofloat() / move_duration;
-
-			if ( var < 0 )
-			{
-
-				if ( change_index )
+				if ( ttime < spin_ms )
 				{
-					// marquees[marquees.len()-1].ob will get swapped through to the leftmost position
-					marquees[marquees.len()-1].ob.index_offset = marquees[0].base_io - curr_move - jump_adjust;
-					for ( local i=marquees.len()-1; i>0; i-=1 )
-					{
-						marquees[i].swap_art( marquees[i-1] );
-						marquees[i].reset();
-					}
+					snap.alpha = 255 - 255.0 * ttime / spin_ms;
+					return true;
 				}
-
-				foreach ( m in marquees )
-					m.move_left( progress );
 			}
-			else
-			{
-				if ( change_index )
-				{
-					// marquees[0].ob will get swapped through to the rightmost position
-					marquees[0].ob.index_offset = marquees[marquees.len()-1].base_io + curr_move + jump_adjust;
-					for ( local i=0; i<marquees.len()-1; i+=1 )
-					{
-						marquees[i].swap_art( marquees[i+1] );
-						marquees[i].reset();
-					}
-				}
-				foreach ( m in marquees )
-					m.move_right( progress );
-			}
-			return true;
+			snap.file_name="";
+			snap.alpha=0;
 		}
+		break;
 
-		foreach ( m in marquees )
+	case Transition.EndNavigation:
+		if ( snapbg )
 		{
-			m.ob = m.orig_ob;
-			m.reset();
-			m.ob.index_offset = m.base_io;
+			if ( ttime < spin_ms )
+			{
+				snap.alpha = 255.0 * ttime / spin_ms;
+				return true;
+			}
+			snap.alpha = 255;
 		}
-		marquees[2].ob.shader = yes_shader;
-		last_move=0;
 		break;
 
 	case Transition.StartLayout:
@@ -217,6 +285,8 @@ function orbit_transition( ttype, var, ttime ) {
 			foreach (o in fe.obj)
 				o.alpha = 255;
 		}
+		if ( snapbg )
+			snapbg.alpha=SNAPBG_ALPHA;
 		break;
 
 	case Transition.EndLayout:
@@ -228,19 +298,21 @@ function orbit_transition( ttype, var, ttime ) {
 
 			return true;
 		}
+		else
+		{
+			local old_alpha;
+			foreach (o in fe.obj)
+			{
+				old_alpha = o.alpha;
+				o.alpha = 0;
+			}
+
+			if ( old_alpha != 0 )
+				return true;
+		}
+
 		break;
 	}
 
 	return false;
-}
-
-fe.add_ticks_callback( "orbit_tick" );
-
-function orbit_tick( ttime ) {
-	local block = ttime / 30000;
-
-	if ( block % 2 )
-		set_bright( ( ( ttime % 30000 ) / 30000.0 ) * 255, frame );
-	else
-		set_bright( 255 - ( ( ttime % 30000 ) / 30000.0 ) * 255, frame );
 }

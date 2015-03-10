@@ -53,13 +53,18 @@ public:
 	//
 	void on_new_list( FeSettings *, float, float );
 	void on_new_selection( FeSettings * );
-	const sf::Drawable &drawable() { return (const sf::Drawable &)*this; };
+	const sf::Drawable &drawable() const { return (const sf::Drawable &)*this; };
 
 	int getIndexOffset() const;
 	void setIndexOffset( int );
+	int getFilterOffset() const;
+	void setFilterOffset( int );
 
 	void set_word_wrap( bool );
 	bool get_word_wrap();
+
+	void set_first_line_hint( int l );
+	int get_first_line_hint();
 
 	const char *get_string();
 	void set_string(const char *s);
@@ -93,6 +98,7 @@ private:
 	std::string m_string;
 	std::string m_font_name;
 	int m_index_offset;
+	int m_filter_offset;
 	int m_user_charsize;	 	// -1 if no charsize specified
 	sf::Vector2f m_size;		// unscaled size
 	sf::Vector2f m_position;	// unscaled position

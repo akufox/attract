@@ -23,8 +23,11 @@
 #
 # BUILD CONFIGURATION OPTIONS:
 #
-# Uncomment next line to disable movie support (i.e. don't use FFmpeg).
+# Uncomment next line to disable movie support (i.e. no FFmpeg).
 #NO_MOVIE=1
+#
+# Uncomment next line to disable network support (i.e. no SFML Network).
+#NO_NET=1
 #
 # By default, if FontConfig gets enabled we link against the system's expat 
 # library (because FontConfig uses expat too).  If FontConfig is not used
@@ -67,18 +70,22 @@ _DEP =\
 	fe_util_sq.hpp \
 	fe_info.hpp \
 	fe_input.hpp \
+	fe_romlist.hpp \
 	fe_xml.hpp \
 	fe_settings.hpp \
 	fe_config.hpp \
 	fe_presentable.hpp \
 	fe_present.hpp \
+	sprite.hpp \
 	fe_image.hpp \
 	fe_sound.hpp \
 	fe_shader.hpp \
 	fe_overlay.hpp \
+	fe_window.hpp \
 	tp.hpp \
 	fe_text.hpp \
 	fe_listbox.hpp \
+	fe_vm.hpp \
 	fe_icon.hpp
 
 _OBJ =\
@@ -87,38 +94,46 @@ _OBJ =\
 	fe_util_sq.o \
 	fe_info.o \
 	fe_input.o \
+	fe_romlist.o \
 	fe_xml.o \
 	fe_settings.o \
 	fe_build.o \
 	fe_config.o \
 	fe_presentable.o \
 	fe_present.o \
+	sprite.o \
 	fe_image.o \
 	fe_sound.o \
 	fe_shader.o \
 	fe_overlay.o \
+	fe_window.o \
 	tp.o \
 	fe_text.o \
 	fe_listbox.o \
+	fe_vm.o \
 	main.o
 
-#
-# Test OS to set some defaults
-#
-ifeq ($(OS),Windows_NT)
+ifneq ($(FE_WINDOWS_COMPILE),1)
  #
- # Windows
+ # Test OS to set some defaults
  #
- FE_WINDOWS_COMPILE=1
-else
- UNAME = $(shell uname -a)
- ifeq ($(firstword $(filter Darwin,$(UNAME))),Darwin)
+ ifeq ($(OS),Windows_NT)
   #
-  # Mac OS X
+  # Windows
   #
-  _DEP += fe_util_osx.hpp
-  _OBJ += fe_util_osx.o
-  LIBS += -framework Cocoa
+  FE_WINDOWS_COMPILE=1
+ else
+  UNAME = $(shell uname -a)
+  ifeq ($(firstword $(filter Darwin,$(UNAME))),Darwin)
+   #
+   # Mac OS X
+   #
+   _DEP += fe_util_osx.hpp
+   _OBJ += fe_util_osx.o
+   LIBS += -framework Cocoa
+
+   FE_MACOSX_COMPILE=1
+  endif
  endif
 endif
 
@@ -130,9 +145,18 @@ ifeq ($(WINDOWS_STATIC),1)
  CFLAGS += -DSFML_STATIC $(shell $(PKG_CONFIG) --static --cflags sfml)
  FE_WINDOWS_COMPILE=1
 else
- LIBS += -lsfml-graphics \
+
+ ifeq ($(NO_NET),1)
+  LIBS += -lsfml-graphics \
 	-lsfml-window \
 	-lsfml-system
+  FE_FLAGS += -DNO_NET
+ else
+  LIBS += -lsfml-graphics \
+	-lsfml-window \
+	-lsfml-network \
+	-lsfml-system
+ endif
 endif
 
 ifeq ($(FE_WINDOWS_COMPILE),1)
@@ -145,8 +169,10 @@ endif
 #
 # Check whether optional libs should be enabled
 #
-ifeq ($(shell $(PKG_CONFIG) --exists fontconfig && echo "1" || echo "0"), 1)
-USE_FONTCONFIG=1
+ifneq ($(FE_WINDOWS_COMPILE),1)
+ ifeq ($(shell $(PKG_CONFIG) --exists fontconfig && echo "1" || echo "0"), 1)
+ USE_FONTCONFIG=1
+ endif
 endif
 
 ifeq ($(shell $(PKG_CONFIG) --exists libswresample && echo "1" || echo "0"), 1)
@@ -179,7 +205,13 @@ ifeq ($(NO_MOVIE),1)
  LIBS += -lsfml-audio
  AUDIO =
 else
- TEMP_LIBS += libavformat libavcodec libavutil libswscale openal
+ TEMP_LIBS += libavformat libavcodec libavutil libswscale
+
+ ifeq ($(FE_MACOSX_COMPILE),1)
+  LIBS += -framework OpenAL
+ else
+  TEMP_LIBS += openal
+ endif
 
  ifeq ($(USE_SWRESAMPLE),1)
   TEMP_LIBS += libswresample
@@ -293,6 +325,7 @@ SQSTDLIBOBJS= \
 	$(SQSTDLIB_OBJ_DIR)/sqstdmath.o \
 	$(SQSTDLIB_OBJ_DIR)/sqstdstring.o \
 	$(SQSTDLIB_OBJ_DIR)/sqstdaux.o \
+	$(SQSTDLIB_OBJ_DIR)/sqstdsystem.o \
 	$(SQSTDLIB_OBJ_DIR)/sqstdrex.o
 
 $(OBJ_DIR)/libsqstdlib.a: $(SQSTDLIBOBJS) | $(SQSTDLIB_OBJ_DIR)

@@ -105,14 +105,15 @@ private:
 	sf::Mutex m_packetq_mutex;
 
 public:
+	virtual ~FeBaseStream();
+
 	bool at_end;					// set when at the end of our input
 	AVCodecContext *codec_ctx;
 	AVCodec *codec;
 	int stream_id;
 
 	FeBaseStream();
-	void close();
-	void stop();
+	virtual void stop();
 	AVPacket *pop_packet();
 	void push_packet( AVPacket *pkt );
 	void clear_packet_queue();
@@ -137,7 +138,6 @@ public:
 
 	FeAudioImp();
 	~FeAudioImp();
-	void close();
 };
 
 //
@@ -159,6 +159,8 @@ public:
 	sf::Time time_base;
 	sf::Texture display_texture;
 	sf::Clock video_timer;
+	SwsContext *sws_ctx;
+	int sws_flags;
 
 	//
 	// The video thread sets display_frame and display_frame_ready when
@@ -167,13 +169,14 @@ public:
 	//
 	sf::Mutex image_swap_mutex;
 	sf::Uint8 *display_frame;
-	bool display_ready;
 
 	FeVideoImp( FeMedia *parent );
+	~FeVideoImp();
+
 	void play();
 	void stop();
-	void close();
 
+	void preload();
 	void video_thread();
 };
 
@@ -185,7 +188,7 @@ FeBaseStream::FeBaseStream()
 {
 }
 
-void FeBaseStream::close()
+FeBaseStream::~FeBaseStream()
 {
 	if ( codec_ctx )
 	{
@@ -244,10 +247,15 @@ void FeBaseStream::free_packet( AVPacket *pkt )
 
 void FeBaseStream::free_frame( AVFrame *frame )
 {
-#if (LIBAVCODEC_VERSION_INT >= AV_VERSION_INT( 54, 28, 0 ))
-	avcodec_free_frame( &frame );
+#if (LIBAVCODEC_VERSION_INT >= AV_VERSION_INT( 55, 45, 0 ))
+	av_frame_unref( frame );
+	av_frame_free( &frame );
 #else
+ #if (LIBAVCODEC_VERSION_INT >= AV_VERSION_INT( 54, 28, 0 ))
+	avcodec_free_frame( &frame );
+ #else
 	av_free( frame );
+ #endif
 #endif
 }
 
@@ -262,15 +270,11 @@ FeAudioImp::FeAudioImp()
 
 FeAudioImp::~FeAudioImp()
 {
-	close();
-}
+	sf::Lock l( buffer_mutex );
 
-void FeAudioImp::close()
-{
 #ifdef DO_RESAMPLE
 	if ( resample_ctx )
 	{
-		sf::Lock l( buffer_mutex );
 		resample_free( &resample_ctx );
 		resample_ctx = NULL;
 	}
@@ -278,13 +282,9 @@ void FeAudioImp::close()
 
 	if ( buffer )
 	{
-		sf::Lock l( buffer_mutex );
-
 		av_free( buffer );
 		buffer=NULL;
 	}
-
-	FeBaseStream::close();
 }
 
 FeVideoImp::FeVideoImp( FeMedia *p )
@@ -292,9 +292,18 @@ FeVideoImp::FeVideoImp( FeMedia *p )
 		m_video_thread( &FeVideoImp::video_thread, this ),
 		m_parent( p ),
 		run_video_thread( false ),
-		display_frame( NULL ),
-		display_ready( false )
+		sws_ctx( NULL ),
+		sws_flags( SWS_FAST_BILINEAR ),
+		display_frame( NULL )
 {
+}
+
+FeVideoImp::~FeVideoImp()
+{
+	stop();
+
+	if (sws_ctx)
+		sws_freeContext(sws_ctx);
 }
 
 void FeVideoImp::play()
@@ -315,39 +324,140 @@ void FeVideoImp::stop()
 	FeBaseStream::stop();
 }
 
-void FeVideoImp::close()
+namespace
 {
-	stop();
+	void set_avdiscard_from_qscore( AVCodecContext *c, int qscore )
+	{
+		AVDiscard d = AVDISCARD_DEFAULT;
 
-	display_ready=false;
-	FeBaseStream::close();
+		if ( qscore <= -40 )
+		{
+			if ( qscore <= -120 )
+				d = AVDISCARD_ALL;
+			else if ( qscore <= -100 )
+				d = AVDISCARD_NONKEY;
+			else
+				d = AVDISCARD_BIDIR;
+		}
+		else if ( qscore <= 0 )
+			d = AVDISCARD_NONREF;
+
+		c->skip_loop_filter = d;
+		c->skip_idct = d;
+		c->skip_frame = d;
+	}
 }
 
-struct frame_queue_type
+void FeVideoImp::preload()
 {
-	AVPicture *p;
-	sf::Time pts;
-};
+	bool keep_going = true;
+	while ( keep_going )
+	{
+		AVPacket *packet = pop_packet();
+		if ( packet == NULL )
+		{
+			if ( !m_parent->end_of_file() )
+				m_parent->read_packet();
+			else
+				keep_going = false;
+		}
+		else
+		{
+			//
+			// decompress packet and put it in our frame queue
+			//
+			int got_frame = 0;
+#if (LIBAVCODEC_VERSION_INT >= AV_VERSION_INT( 55, 45, 0 ))
+			AVFrame *raw_frame = av_frame_alloc();
+			codec_ctx->refcounted_frames = 1;
+#else
+			AVFrame *raw_frame = avcodec_alloc_frame();
+#endif
+
+			int len = avcodec_decode_video2( codec_ctx, raw_frame,
+									&got_frame, packet );
+			if ( len < 0 )
+			{
+				std::cout << "error decoding video" << std::endl;
+				free_frame( raw_frame );
+				free_packet( packet );
+				return;
+			}
+
+			if ( got_frame )
+			{
+				AVPicture *my_pict = (AVPicture *)av_malloc( sizeof( AVPicture ) );
+				avpicture_alloc( my_pict, PIX_FMT_RGBA,
+										codec_ctx->width,
+										codec_ctx->height );
+
+				if ( !my_pict )
+				{
+					std::cerr << "Error allocating AVPicture during preload" << std::endl;
+					free_frame( raw_frame );
+					free_packet( packet );
+					return;
+				}
+
+				if ( (codec_ctx->width & 0x7) || (codec_ctx->height & 0x7) )
+					sws_flags |= SWS_ACCURATE_RND;
+
+				sws_ctx = sws_getCachedContext( NULL,
+								codec_ctx->width, codec_ctx->height, codec_ctx->pix_fmt,
+								codec_ctx->width, codec_ctx->height, PIX_FMT_RGBA,
+								sws_flags, NULL, NULL, NULL );
+
+				if ( !sws_ctx )
+				{
+					std::cerr << "Error allocating SwsContext during preload" << std::endl;
+					avpicture_free( my_pict );
+					av_free( my_pict );
+					free_frame( raw_frame );
+					free_packet( packet );
+					return;
+				}
+
+				sws_scale( sws_ctx, raw_frame->data, raw_frame->linesize,
+							0, codec_ctx->height, my_pict->data,
+							my_pict->linesize );
+
+				sf::Lock l( image_swap_mutex );
+				display_texture.update( my_pict->data[0] );
+
+				keep_going = false;
+
+				avpicture_free( my_pict );
+				av_free( my_pict );
+			}
+
+			free_frame( raw_frame );
+			free_packet( packet );
+		}
+	}
+}
 
 void FeVideoImp::video_thread()
 {
+#if (LIBAVCODEC_VERSION_INT >= AV_VERSION_INT( 55, 45, 0 ))
 	const unsigned int MAX_QUEUE( 4 ), MIN_QUEUE( 0 );
+#else
+	const unsigned int MAX_QUEUE( 1 ), MIN_QUEUE( 0 );
+#endif
 
-	int discarded( 0 ), displayed( 0 );
 	bool exhaust_queue( false );
 	sf::Time max_sleep = time_base / (sf::Int64)2;
 
-	std::queue<frame_queue_type> frame_queue;
-	frame_queue_type detached_frame = { NULL, sf::Time::Zero };
+	int qscore( 100 ), qadjust( 10 ); // quality scoring
+	int displayed( 0 ), discarded( 0 ), qscore_accum( 0 );
 
-	AVFrame *raw_frame = avcodec_alloc_frame();
+	std::queue<AVFrame *> frame_queue;
 
-	SwsContext *sws_ctx = sws_getContext(
-					codec_ctx->width, codec_ctx->height, codec_ctx->pix_fmt,
-					codec_ctx->width, codec_ctx->height, PIX_FMT_RGBA,
-					SWS_FAST_BILINEAR, NULL, NULL, NULL );
+	AVPicture *my_pict = (AVPicture *)av_malloc( sizeof( AVPicture ) );
+	avpicture_alloc( my_pict, PIX_FMT_RGBA,
+							codec_ctx->width,
+							codec_ctx->height );
 
-	if ((!sws_ctx) || (!raw_frame) )
+	if ((!sws_ctx) || (!my_pict) )
 	{
 		std::cout << "error initializing video thread" << std::endl;
 		goto the_end;
@@ -356,6 +466,7 @@ void FeVideoImp::video_thread()
 	while ( run_video_thread )
 	{
 		bool do_process = true;
+		bool discard_frames = false;
 
 		//
 		// First, display queued frames if they are coming up
@@ -363,44 +474,61 @@ void FeVideoImp::video_thread()
 		if (( frame_queue.size() > MIN_QUEUE )
 			|| ( exhaust_queue && !frame_queue.empty() ))
 		{
-			sf::Time wait_time = frame_queue.front().pts
+			sf::Time wait_time = (sf::Int64)frame_queue.front()->pts * time_base
 										- m_parent->get_video_time();
 
 			if ( wait_time < max_sleep )
 			{
-				if ( wait_time >= sf::Time::Zero )
+				if ( wait_time < -time_base )
+
 				{
+					// If we are falling behind, we may need to start discarding
+					// frames to catch up
 					//
-					// sleep until presentation time and then display
-					//
-					sf::sleep( wait_time );
+					qscore -= qadjust;
+					set_avdiscard_from_qscore( codec_ctx, qscore );
+					discard_frames = ( codec_ctx->skip_frame == AVDISCARD_ALL );
+				}
+				else if ( wait_time >= sf::Time::Zero )
+				{
+					if ( discard_frames )
 					{
-						sf::Lock l( image_swap_mutex );
-
-						if ( detached_frame.p )
-						{
-							avpicture_free( detached_frame.p );
-							av_free( detached_frame.p );
-						}
-
-						detached_frame = frame_queue.front();
-						frame_queue.pop();
-						display_frame = detached_frame.p->data[0];
-						displayed++;
+						//
+						// Only stop discarding frames once we have caught up and are
+						// time_base ahead of the desired presentation time
+						//
+						if ( wait_time >= time_base )
+							discard_frames = false;
+					}
+					else
+					{
+						//
+						// Otherwise, we are ahead and can sleep until presentation time
+						//
+						sf::sleep( wait_time );
 					}
 				}
-				else
-				{
-					//
-					// we are already past the presentation time, discard
-					//
-					frame_queue_type f=frame_queue.front();
-					frame_queue.pop();
 
-					avpicture_free( f.p );
-					av_free( f.p );
+				AVFrame *detached_frame = frame_queue.front();
+				frame_queue.pop();
+
+				qscore_accum += qscore;
+				if ( discard_frames )
+				{
 					discarded++;
+					continue;
 				}
+
+				sf::Lock l( image_swap_mutex );
+				displayed++;
+
+				sws_scale( sws_ctx, detached_frame->data, detached_frame->linesize,
+							0, codec_ctx->height, my_pict->data,
+							my_pict->linesize );
+
+				display_frame = my_pict->data[0];
+				free_frame( detached_frame );
+
 				do_process = false;
 			}
 			//
@@ -432,6 +560,13 @@ void FeVideoImp::video_thread()
 					// decompress packet and put it in our frame queue
 					//
 					int got_frame = 0;
+#if (LIBAVCODEC_VERSION_INT >= AV_VERSION_INT( 55, 45, 0 ))
+					AVFrame *raw_frame = av_frame_alloc();
+					codec_ctx->refcounted_frames = 1;
+#else
+					AVFrame *raw_frame = avcodec_alloc_frame();
+#endif
+
 					int len = avcodec_decode_video2( codec_ctx, raw_frame,
 											&got_frame, packet );
 					if ( len < 0 )
@@ -439,33 +574,34 @@ void FeVideoImp::video_thread()
 
 					if ( got_frame )
 					{
-						frame_queue_type my_new =
-						{
-							NULL, 				// AVPicture *
-							sf::Time::Zero		// pts
-						};
+						raw_frame->pts = raw_frame->pkt_pts;
 
-						if ( packet->pts != AV_NOPTS_VALUE )
-							my_new.pts = time_base * (sf::Int64)packet->pts;
-						else
-							my_new.pts = time_base * (sf::Int64)packet->dts;
+						if ( raw_frame->pts == AV_NOPTS_VALUE )
+							raw_frame->pts = packet->dts;
 
-						my_new.p = (AVPicture *)av_malloc( sizeof( AVPicture ) );
-						avpicture_alloc( my_new.p, PIX_FMT_RGBA,
-												codec_ctx->width,
-												codec_ctx->height );
-
-						sws_scale( sws_ctx, raw_frame->data, raw_frame->linesize,
-									0, codec_ctx->height, my_new.p->data,
-									my_new.p->linesize );
-
-						frame_queue.push( my_new );
+						frame_queue.push( raw_frame );
 					}
+					else
+						free_frame( raw_frame );
+
 					free_packet( packet );
 				}
 			}
 			else
 			{
+				// Adjust our quality scoring, increasing it if it is down
+				//
+				if (( codec_ctx->skip_frame != AVDISCARD_DEFAULT )
+						&& ( qadjust > 1 ))
+					qadjust--;
+
+				if ( qscore <= -100 ) // we stick at the lowest rate if we are actually discarding frames
+					qscore = -100;
+				else if ( qscore < 100 )
+					qscore += qadjust;
+
+				set_avdiscard_from_qscore( codec_ctx, qscore );
+
 				//
 				// full frame queue and nothing to display yet, so sleep
 				//
@@ -479,39 +615,36 @@ the_end:
 	// shutdown the thread
 	//
 	at_end=true;
-	if (sws_ctx) sws_freeContext( sws_ctx );
 
-	if (raw_frame)
+	if ( my_pict )
 	{
-		free_frame( raw_frame );
-		raw_frame=NULL;
+		sf::Lock l( image_swap_mutex );
+
+		avpicture_free( my_pict );
+		av_free( my_pict );
+		display_frame=NULL;
 	}
 
 	while ( !frame_queue.empty() )
 	{
-		frame_queue_type f=frame_queue.front();
+		AVFrame *f=frame_queue.front();
 		frame_queue.pop();
 
-		if ( f.p )
-		{
-			avpicture_free( f.p );
-			av_free( f.p );
-		}
+		if (f)
+			free_frame( f );
 	}
 
-	{
-		sf::Lock l( image_swap_mutex );
-		if ( detached_frame.p )
-		{
-			avpicture_free( detached_frame.p );
-			av_free( detached_frame.p );
-			detached_frame.p=NULL;
-		}
-		display_frame=NULL;
-	}
 #ifdef FE_DEBUG
-	std::cout << "End Video Thread, displayed=" << displayed
-				<< ", discarded=" << discarded << std::endl;
+
+	int total_shown = displayed + discarded;
+	int average = ( total_shown == 0 ) ? qscore_accum : ( qscore_accum / total_shown );
+
+	std::cout << "End Video Thread - " << m_parent->m_format_ctx->filename << std::endl
+				<< " - bit_rate=" << codec_ctx->bit_rate
+				<< ", width=" << codec_ctx->width << ", height=" << codec_ctx->height << std::endl
+				<< " - displayed=" << displayed << ", discarded=" << discarded << std::endl
+				<< " - average qscore=" << average
+				<< std::endl;
 #endif
 }
 
@@ -553,14 +686,6 @@ sf::Texture *FeMedia::get_texture()
 	if ( m_video )
 		return &(m_video->display_texture);
 	return NULL;
-}
-
-bool FeMedia::get_display_ready() const
-{
-	if ( m_video )
-		return m_video->display_ready;
-	else
-		return false;
 }
 
 sf::Time FeMedia::get_video_time()
@@ -617,14 +742,12 @@ void FeMedia::close()
 
 	if (m_audio)
 	{
-		m_audio->close();
 		delete m_audio;
 		m_audio=NULL;
 	}
 
 	if (m_video)
 	{
-		m_video->close();
 		delete m_video;
 		m_video=NULL;
 	}
@@ -653,6 +776,25 @@ bool FeMedia::is_playing()
 void FeMedia::setLoop( bool l )
 {
 	m_loop=l;
+}
+
+bool FeMedia::getLoop() const
+{
+	return m_loop;
+}
+
+void FeMedia::setVolume(float volume)
+{
+	if ( m_audio )
+	{
+		AVDiscard d =( volume <= 0.f ) ? AVDISCARD_ALL : AVDISCARD_DEFAULT;
+
+		m_audio->codec_ctx->skip_loop_filter = d;
+		m_audio->codec_ctx->skip_idct = d;
+		m_audio->codec_ctx->skip_frame = d;
+	}
+
+	sf::SoundStream::setVolume( volume );
 }
 
 bool FeMedia::openFromFile( const std::string &name )
@@ -711,6 +853,14 @@ bool FeMedia::openFromFile( const std::string &name )
 					m_audio->codec_ctx->sample_rate );
 
 				sf::SoundStream::setLoop( false );
+
+#ifndef DO_RESAMPLE
+				if ( m_audio->codec_ctx->sample_fmt != AV_SAMPLE_FMT_S16 )
+				{
+					std::cerr << "Warning: Attract-Mode was compiled without an audio resampler (libswresample or libavresample)." << std::endl
+						<< "The audio format in " << name << " appears to need resampling.  It will likely sound like garbage." << std::endl;
+				}
+#endif
 			}
 		}
 	}
@@ -728,6 +878,8 @@ bool FeMedia::openFromFile( const std::string &name )
 		}
 		else
 		{
+			m_format_ctx->streams[stream_id]->codec->workaround_bugs = FF_BUG_AUTODETECT;
+
 			if ( avcodec_open2( m_format_ctx->streams[stream_id]->codec,
 										dec, NULL ) < 0 )
 			{
@@ -747,6 +899,7 @@ bool FeMedia::openFromFile( const std::string &name )
 				m_video->display_texture.create( m_video->codec_ctx->width,
 											m_video->codec_ctx->height );
 				m_video->display_texture.setSmooth( true );
+				m_video->preload();
 			}
 		}
 	}
@@ -802,7 +955,6 @@ bool FeMedia::tick()
 		{
 			m_video->display_texture.update( m_video->display_frame );
 			m_video->display_frame = NULL;
-			m_video->display_ready = true;
 			return true;
 		}
 	}
@@ -868,8 +1020,12 @@ bool FeMedia::onGetData( Chunk &data )
 			}
 		}
 #else
+ #if (LIBAVCODEC_VERSION_INT >= AV_VERSION_INT( 55, 45, 0 ))
+		AVFrame *frame = av_frame_alloc();
+		m_audio->codec_ctx->refcounted_frames = 1;
+ #else
 		AVFrame *frame = avcodec_alloc_frame();
-
+ #endif
 		//
 		// TODO: avcodec_decode_audio4() can return multiple frames per packet depending on the codec.
 		// We don't deal with this appropriately...
@@ -919,10 +1075,17 @@ bool FeMedia::onGetData( Chunk &data )
 						return false;
 					}
 
-					av_opt_set_int( m_audio->resample_ctx, "in_channel_layout", frame->channel_layout, 0 );
+					int64_t channel_layout = frame->channel_layout;
+					if ( !channel_layout )
+					{
+						channel_layout = av_get_default_channel_layout(
+								m_audio->codec_ctx->channels );
+					}
+
+					av_opt_set_int( m_audio->resample_ctx, "in_channel_layout", channel_layout, 0 );
 					av_opt_set_int( m_audio->resample_ctx, "in_sample_fmt", frame->format, 0 );
 					av_opt_set_int( m_audio->resample_ctx, "in_sample_rate", frame->sample_rate, 0 );
-					av_opt_set_int( m_audio->resample_ctx, "out_channel_layout", frame->channel_layout, 0 );
+					av_opt_set_int( m_audio->resample_ctx, "out_channel_layout", channel_layout, 0 );
 					av_opt_set_int( m_audio->resample_ctx, "out_sample_fmt", AV_SAMPLE_FMT_S16, 0 );
 					av_opt_set_int( m_audio->resample_ctx, "out_sample_rate", frame->sample_rate, 0 );
 
@@ -1009,4 +1172,36 @@ bool FeMedia::is_supported_media_file( const std::string &filename )
 					NULL,
 					filename.c_str(),
 					NULL ) != NULL ) ? true : false;
+}
+
+
+int FeMedia::number_of_frames() const
+{
+	if ( m_video && m_format_ctx )
+		return m_format_ctx->streams[ m_video->stream_id ]->nb_frames;
+
+	return 0;
+}
+
+sf::Time FeMedia::get_duration() const
+{
+	if ( m_video && m_format_ctx )
+	{
+		return sf::seconds(
+				av_q2d( m_format_ctx->streams[m_video->stream_id]->time_base ) *
+							m_format_ctx->streams[ m_video->stream_id ]->duration );
+	}
+
+	return sf::Time::Zero;
+}
+
+const char *FeMedia::get_metadata( const char *tag )
+{
+	if ( !m_format_ctx )
+		return "";
+
+	AVDictionaryEntry *entry = NULL;
+	entry = av_dict_get( m_format_ctx->metadata, tag, NULL, AV_DICT_IGNORE_SUFFIX );
+
+	return ( entry ? entry->value : "" );
 }
